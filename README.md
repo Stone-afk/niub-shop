@@ -24,8 +24,8 @@ The browser talks only to Next.js. `web` acts as a BFF: product requests go to `
 
 ## 模块 / Modules
 
-- `mall-service`：FastAPI 商品目录服务，使用内存示例数据。 / FastAPI product catalog backed by deterministic in-memory data.
-- `agent-service`：厂商无关 Agent 和聊天 API，通过 HTTP 查询商城。 / Vendor-neutral agent and chat API that queries the mall over HTTP.
+- `mall-service`：FastAPI 商品目录服务，使用带分类、标签和库存状态的确定性内存示例数据。 / FastAPI product catalog backed by deterministic in-memory data with categories, tags, and availability.
+- `agent-service`：厂商无关 Agent 和聊天 API，通过原生 tool calling 按需查询商城。 / Vendor-neutral agent and chat API that queries the mall on demand through native tool calling.
 - `web`：Next.js App Router 商城页面和服务端代理。 / Next.js App Router storefront and server-side proxies.
 
 ## 环境要求 / Prerequisites
@@ -127,6 +127,10 @@ These variables are server-only and are never exposed to the browser as `NEXT_PU
 curl http://localhost:8001/products
 ```
 
+每个商品包含 `id`、双语名称与描述、以最小货币单位表示的 `price_cents`、`currency`、`category`、`tags`，以及 `in_stock | out_of_stock` 库存状态。mock 目录是确定性的；搜索工具只把当前有货商品交给模型，但历史卡片始终显示商城的当前库存。
+
+Each product contains an `id`, bilingual name and description, minor-unit `price_cents`, `currency`, `category`, `tags`, and `in_stock | out_of_stock` availability. The mock catalog is deterministic. Product search exposes only currently in-stock items to the model, while historical cards show the catalog's current availability.
+
 ### Agent service · `:8002`
 
 - `GET /health`
@@ -143,9 +147,9 @@ curl -N -X POST http://localhost:8002/chat \
   -d '{"messages":[{"role":"user","content":"有哪些商品？"}]}'
 ```
 
-成功响应是命名 SSE 事件流：多个 `event: delta`，最后是 `event: done`。请求中的 `messages` 是完整多轮历史；服务会在最前面加入 YAML 中的 `system_prompt`。
+无状态 `/chat` 的成功响应是命名 SSE 事件流：多个 `event: delta`，最后是 `event: done`。请求中的 `messages` 是完整多轮历史；服务会在最前面加入 YAML 中的 `system_prompt`。
 
-A successful response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the YAML `system_prompt`.
+A successful stateless `/chat` response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the YAML `system_prompt`.
 
 `POST /chat` 是无状态兼容接口。`/chat` 页面使用新的 conversation API：浏览器只发送本轮内容，Agent 从 SQLite 读取已完成轮次并构造模型上下文。当前为单用户本地模式，所有请求由服务端固定归属 `user_id = 1`；客户端不能指定或覆盖用户 ID。
 
@@ -154,6 +158,48 @@ A successful response is a named SSE stream: one or more `event: delta` events f
 会话回复成功时才保存完整 Agent 内容。中断或失败不会保存部分回复，页面显示“回复失败，可重试 / Reply failed, retry available”；仅最新的失败轮次可以重试。会话按最近活动排序，第一条用户消息自动成为标题。
 
 An assistant answer is saved only after the stream completes. Interrupted or failed streams discard partial content and show a bilingual retry state. Only the newest failed turn is retryable. Conversations are ordered by recent activity, and the first user message becomes the title.
+
+## 商品推荐 Agent / Product recommendation agent
+
+持久化 conversation API 使用 OpenAI-compatible 原生工具调用，执行以下受控流程：
+
+The persisted conversation API uses OpenAI-compatible native tool calling with this controlled flow:
+
+```text
+模型选择 search_products / model selects search_products
+  → Agent 校验结构化筛选 / validates structured filters
+  → Agent 查询 Mall mock 目录 / queries the Mall mock catalog
+  → 工具结果回传模型 / returns trusted tool results
+  → 模型调用 submit_product_recommendation
+  → Agent 校验回答与商品 ID / validates answer and product IDs
+  → 原子保存并发送 SSE / atomically persists and emits SSE
+```
+
+`search_products` 支持可选的 `keyword`、`category`、`min_price_cents`、`max_price_cents`、`sort`（`relevance | price_asc | price_desc`）和 `limit`（1–10，默认 5）。模型每轮最多搜索三次，可调整条件后再次查询。未知字段、负数价格、倒置区间和超限数量都会在访问商城前被拒绝。
+
+`search_products` accepts optional `keyword`, `category`, `min_price_cents`, `max_price_cents`, `sort` (`relevance | price_asc | price_desc`), and `limit` (1–10, default 5). The model may refine its filters but can search at most three times per turn. Unknown fields, negative prices, inverted ranges, and invalid limits are rejected before Mall access.
+
+最终提交包含自然语言 `answer` 和最多十个 `product_ids`。每个 ID 必须来自本轮成功搜索结果；模型虚构、重复或未经搜索的 ID 会使整轮失败，不会部分保存。工具参数、原始工具结果和内部调用轨迹不会作为聊天消息持久化。
+
+The final submission contains a natural-language `answer` and up to ten `product_ids`. Every ID must come from a successful search in the same turn. Invented, duplicate, or unsearched IDs invalidate the whole turn; nothing is partially persisted. Tool arguments, raw tool results, and internal traces are not stored as chat messages.
+
+conversation 成功流的事件顺序固定如下，即使没有推荐商品也会发送一次空数组：
+
+A successful conversation stream always uses this order, including one empty array when no products are recommended:
+
+```text
+event: delta              # one or more validated answer chunks / 已校验回答分片
+event: recommendations    # {"product_ids":[...]}
+event: done               # {}
+```
+
+回答和有序商品 ID 在同一个 SQLite 事务中保存。刷新或切换历史会话后，Web 从详情接口恢复 ID，并用当前 `/api/products` 目录渲染只读卡片：名称、价格、描述和双语库存状态。目录中已不存在的历史 ID 会显示“商品暂不可用 / Product unavailable”，不会伪造商品信息。目录加载失败不影响文字对话。
+
+The answer and ordered product IDs are stored in one SQLite transaction. After refresh or history selection, Web restores the IDs from conversation detail and renders read-only cards from the current `/api/products` catalog: name, price, description, and bilingual availability. A historical ID missing from the catalog shows “商品暂不可用 / Product unavailable” instead of invented data. Catalog loading failures do not block text chat.
+
+模型协议、工具参数、商城访问或最终校验失败时，本轮标记为 failed，不保存部分回答或商品 ID；页面允许重试最新失败轮次。所有公开错误使用稳定代码，且不包含模型响应、工具正文或密钥。
+
+If model protocol, tool arguments, Mall access, or final validation fails, the turn becomes failed without partial answer or product IDs. The UI can retry the newest failed turn. Public errors use stable codes and never include model responses, tool bodies, or secrets.
 
 ### Web BFF · `:3000`
 
@@ -221,9 +267,9 @@ docs/            # Bilingual design and implementation documents / 中英双语�
 
 ## 当前范围 / Current scope
 
-当前已包含单用户本地 SQLite 会话持久化、历史选择、继续对话和失败轮次重试。不包含登录认证、多用户隔离、云数据库、跨设备同步、购物车、结算、订单、支付或模型工具调用。模型接入使用通用 OpenAI-compatible HTTP 协议，不绑定厂商 SDK。
+当前已包含单用户本地 SQLite 会话持久化、历史选择、继续对话、失败轮次重试、结构化商品搜索工具和历史/实时商品卡片。不包含登录认证、多用户隔离、云数据库、跨设备同步、购物车、结算、订单、支付、个性化画像或向量检索。模型接入使用通用 OpenAI-compatible HTTP 协议，不绑定厂商 SDK。
 
-The current scope includes single-user local SQLite persistence, history selection, conversation continuation, and failed-turn retry. It excludes login, multi-user isolation, cloud databases, cross-device sync, cart, checkout, orders, payments, and model tool calls. Model access uses the generic OpenAI-compatible HTTP protocol without a vendor SDK.
+The current scope includes single-user local SQLite persistence, history selection, conversation continuation, failed-turn retry, structured product-search tools, and historical/live product cards. It excludes login, multi-user isolation, cloud databases, cross-device sync, cart, checkout, orders, payments, personalization, and vector search. Model access uses the generic OpenAI-compatible HTTP protocol without a vendor SDK.
 
 ## 许可证 / License
 

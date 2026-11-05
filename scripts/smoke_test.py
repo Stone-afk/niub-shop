@@ -108,13 +108,97 @@ def _start_fake_model(
                 {
                     "authorization": self.headers.get("authorization"),
                     "messages": payload.get("messages"),
+                    "tools": payload.get("tools"),
+                    "tool_choice": payload.get("tool_choice"),
                 }
             )
-            reply = "First reply" if len(captured_requests) == 1 else "Second reply"
-            body = (
-                f'data: {{"choices":[{{"delta":{{"content":{json.dumps(reply)}}}}}]}}\n\n'
-                "data: [DONE]\n\n"
-            ).encode()
+            messages = payload.get("messages", [])
+            if messages and messages[-1].get("role") == "tool":
+                tool_result = json.loads(messages[-1]["content"])
+                assert messages[-1]["tool_call_id"] == "smoke-search-1"
+                assert tool_result["items"][0]["id"] == "ceramic-mug"
+                arguments = json.dumps(
+                    {
+                        "answer": "推荐陶瓷马克杯 / I recommend the Ceramic Mug.",
+                        "product_ids": ["ceramic-mug"],
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                event = {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "smoke-submit-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "submit_product_recommendation",
+                                            "arguments": arguments,
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+                body = f"data: {json.dumps(event, ensure_ascii=False)}\n\ndata: [DONE]\n\n".encode()
+            else:
+                user_messages = [
+                    message for message in messages if message.get("role") == "user"
+                ]
+                latest_user = user_messages[-1]["content"]
+                if latest_user == "first question":
+                    first_event = {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "smoke-search-1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "search_products",
+                                                "arguments": '{"keyword":"coffee",',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                    second_event = {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {
+                                                "arguments": '"category":"drinkware","max_price_cents":50000,"sort":"price_asc","limit":2}',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                    body = (
+                        f"data: {json.dumps(first_event)}\n\n"
+                        f"data: {json.dumps(second_event)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                else:
+                    event = {
+                        "choices": [{"delta": {"content": "Second reply"}}]
+                    }
+                    body = (
+                        f"data: {json.dumps(event)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
             self.send_response(200)
             self.send_header("content-type", "text/event-stream")
             self.send_header("content-length", str(len(body)))
@@ -157,6 +241,8 @@ llm:
         )
 
         try:
+            mall_environment = os.environ.copy()
+            mall_environment["PYTHONPATH"] = str(ROOT / "mall-service/src")
             processes.append(
                 subprocess.Popen(
                     [
@@ -170,6 +256,7 @@ llm:
                         str(mall_port),
                     ],
                     cwd=ROOT / "mall-service",
+                    env=mall_environment,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -230,6 +317,10 @@ llm:
 
             products = _wait_for_json(f"{web_url}/api/products", processes)
             assert len(products["items"]) >= 2
+            assert all(
+                {"category", "tags", "availability"} <= item.keys()
+                for item in products["items"]
+            )
             initial_conversations = _request_json(f"{web_url}/api/conversations")
             assert initial_conversations == []
             created = _request_json(
@@ -247,7 +338,14 @@ llm:
             assert status == 200
             assert headers["content-type"].startswith("text/event-stream")
             first_response = first_body.decode("utf-8")
-            assert 'data: {"content": "First reply"}' in first_response
+            assert (
+                'data: {"content": "推荐陶瓷马克杯 / I recommend the Ceramic Mug."}'
+                in first_response
+            )
+            assert (
+                'event: recommendations\ndata: {"product_ids": ["ceramic-mug"]}'
+                in first_response
+            )
             assert first_response.endswith("event: done\ndata: {}\n\n")
 
             listed = _request_json(f"{web_url}/api/conversations")
@@ -255,7 +353,12 @@ llm:
             detail = _request_json(
                 f"{web_url}/api/conversations/{created['id']}"
             )
-            assert detail["turns"][0]["assistant_content"] == "First reply"
+            assert detail["turns"][0]["assistant_content"] == (
+                "推荐陶瓷马克杯 / I recommend the Ceramic Mug."
+            )
+            assert detail["turns"][0]["recommended_product_ids"] == [
+                "ceramic-mug"
+            ]
 
             second_status, second_headers, second_body = _request(
                 f"{web_url}/api/conversations/{created['id']}/turns",
@@ -267,12 +370,13 @@ llm:
             second_response = second_body.decode("utf-8")
             assert 'data: {"content": "Second reply"}' in second_response
             assert second_response.endswith("event: done\ndata: {}\n\n")
-            assert len(model_requests) == 2
+            assert len(model_requests) == 3
 
             return {
                 "initial_conversations": initial_conversations,
                 "created_conversation": created,
                 "detail": detail,
+                "products": products,
                 "model_requests": model_requests,
                 "response_bodies": [first_response, second_response],
                 "database_exists": database_path.is_file(),
