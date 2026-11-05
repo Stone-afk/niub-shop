@@ -12,7 +12,8 @@ Browser / 浏览器
         ▼
 web · Next.js :3000
 ├── /api/products ──► mall-service :8001
-└── /api/chat ──────► agent-service :8002
+├── /api/chat ──────► agent-service :8002
+└── /api/conversations/* ──► agent-service :8002
                            │
                            └── HTTP ──► mall-service :8001
 ```
@@ -30,7 +31,7 @@ The browser talks only to Next.js. `web` acts as a BFF: product requests go to `
 ## 环境要求 / Prerequisites
 
 - Python 3.11 或更高版本 / Python 3.11 or newer
-- Node.js 20.9 或更高版本 / Node.js 20.9 or newer
+- Node.js 20.19 或更高的 20.x，或 Node.js 22.12 及更高版本 / Node.js 20.19+ on 20.x, or Node.js 22.12+
 - npm 10 或更高版本 / npm 10 or newer
 
 本机默认 `python` 可能不是 3.11，请在创建环境时明确使用 `python3.11`。
@@ -75,6 +76,7 @@ cd mall-service
 ```bash
 cd agent-service
 AGENT_CONFIG_FILE=./config/llm.local.yaml \
+AGENT_DB_FILE=./data/agent.db \
 MALL_SERVICE_URL=http://localhost:8001 \
   .venv/bin/uvicorn agent_service.app:app \
     --reload --reload-include '*.yaml' --port 8002
@@ -104,6 +106,7 @@ Open [http://localhost:3000](http://localhost:3000).
 | `MALL_SERVICE_URL` | `agent-service`, `web` | `http://localhost:8001` |
 | `AGENT_SERVICE_URL` | `web` | `http://localhost:8002` |
 | `AGENT_CONFIG_FILE` | `agent-service` | 未设置 / unset |
+| `AGENT_DB_FILE` | `agent-service` | `data/agent.db`（相对启动目录 / relative to the working directory） |
 
 这些变量只在服务端使用，不会作为 `NEXT_PUBLIC_*` 暴露给浏览器。
 
@@ -128,6 +131,11 @@ curl http://localhost:8001/products
 
 - `GET /health`
 - `POST /chat`
+- `GET /conversations`
+- `POST /conversations`
+- `GET /conversations/{conversation_id}`
+- `POST /conversations/{conversation_id}/turns`
+- `POST /conversations/{conversation_id}/turns/{turn_id}/retry`
 
 ```bash
 curl -N -X POST http://localhost:8002/chat \
@@ -139,12 +147,42 @@ curl -N -X POST http://localhost:8002/chat \
 
 A successful response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the YAML `system_prompt`.
 
+`POST /chat` 是无状态兼容接口。`/chat` 页面使用新的 conversation API：浏览器只发送本轮内容，Agent 从 SQLite 读取已完成轮次并构造模型上下文。当前为单用户本地模式，所有请求由服务端固定归属 `user_id = 1`；客户端不能指定或覆盖用户 ID。
+
+`POST /chat` remains the stateless compatibility endpoint. The `/chat` page uses the new conversation API: the browser sends only the new turn, while Agent rebuilds model context from completed SQLite turns. This local version is single-user; the server assigns every request to fixed `user_id = 1`, and clients cannot supply or override it.
+
+会话回复成功时才保存完整 Agent 内容。中断或失败不会保存部分回复，页面显示“回复失败，可重试 / Reply failed, retry available”；仅最新的失败轮次可以重试。会话按最近活动排序，第一条用户消息自动成为标题。
+
+An assistant answer is saved only after the stream completes. Interrupted or failed streams discard partial content and show a bilingual retry state. Only the newest failed turn is retryable. Conversations are ordered by recent activity, and the first user message becomes the title.
+
 ### Web BFF · `:3000`
 
 - `GET /api/products`
 - `POST /api/chat`
+- `GET`, `POST /api/conversations`
+- `GET /api/conversations/{conversation_id}`
+- `POST /api/conversations/{conversation_id}/turns`
+- `POST /api/conversations/{conversation_id}/turns/{turn_id}/retry`
 
-浏览器端代码只调用这两个相对路径。Browser code calls only these two relative paths.
+浏览器端代码只调用这些同源相对路径。Browser code calls only these same-origin relative paths.
+
+## 会话数据运维 / Conversation data operations
+
+默认从 `agent-service/` 启动时，数据库位于 `agent-service/data/agent.db`，该目录已被 Git 忽略。SQLite 会自动启用 foreign keys、WAL 和 5000ms busy timeout。这个本地模式只支持一个 Agent worker；可以使用 `--reload`，但不要使用 `--workers` 设置多个服务 worker。
+
+When Agent starts from `agent-service/`, the default database is `agent-service/data/agent.db`, and that directory is Git-ignored. SQLite automatically enables foreign keys, WAL, and a 5000ms busy timeout. This local mode supports one Agent worker only: development `--reload` is supported, but do not configure multiple `--workers`.
+
+如需重置全部历史，先停止 Agent，再删除数据库及 WAL 辅助文件，之后重新启动：
+
+To reset all history, stop Agent first, remove the database and its WAL sidecars, then restart:
+
+```bash
+rm agent-service/data/agent.db \
+  agent-service/data/agent.db-shm \
+  agent-service/data/agent.db-wal
+```
+
+如果文件不存在，`rm` 会提示；可只删除实际存在的文件。不要在 Agent 运行时删除数据库。 / If a file is absent, `rm` reports it; remove only files that exist. Never delete the database while Agent is running.
 
 ## 测试 / Tests
 
@@ -183,9 +221,9 @@ docs/            # Bilingual design and implementation documents / 中英双语�
 
 ## 当前范围 / Current scope
 
-本阶段不包含数据库、用户认证、购物车、结算、订单、支付、模型工具调用、重试或对话持久化。模型接入使用通用 OpenAI-compatible HTTP 协议，不绑定厂商 SDK。
+当前已包含单用户本地 SQLite 会话持久化、历史选择、继续对话和失败轮次重试。不包含登录认证、多用户隔离、云数据库、跨设备同步、购物车、结算、订单、支付或模型工具调用。模型接入使用通用 OpenAI-compatible HTTP 协议，不绑定厂商 SDK。
 
-This phase excludes a database, authentication, cart, checkout, orders, payments, model tool calls, retries, and conversation persistence. Model access uses the generic OpenAI-compatible HTTP protocol without a vendor SDK.
+The current scope includes single-user local SQLite persistence, history selection, conversation continuation, and failed-turn retry. It excludes login, multi-user isolation, cloud databases, cross-device sync, cart, checkout, orders, payments, and model tool calls. Model access uses the generic OpenAI-compatible HTTP protocol without a vendor SDK.
 
 ## 许可证 / License
 

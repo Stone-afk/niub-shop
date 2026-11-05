@@ -98,20 +98,23 @@ def _stop(processes: list[subprocess.Popen[bytes]]) -> None:
 
 
 def _start_fake_model(
-    captured_request: dict[str, Any],
+    captured_requests: list[dict[str, Any]],
 ) -> tuple[ThreadingHTTPServer, threading.Thread]:
     class FakeModelHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             length = int(self.headers.get("content-length", "0"))
             payload = json.loads(self.rfile.read(length))
-            captured_request["authorization"] = self.headers.get("authorization")
-            captured_request["messages"] = payload.get("messages")
-
-            body = (
-                b'data: {"choices":[{"delta":{"content":"Smoke "}}]}\n\n'
-                b'data: {"choices":[{"delta":{"content":"reply"}}]}\n\n'
-                b"data: [DONE]\n\n"
+            captured_requests.append(
+                {
+                    "authorization": self.headers.get("authorization"),
+                    "messages": payload.get("messages"),
+                }
             )
+            reply = "First reply" if len(captured_requests) == 1 else "Second reply"
+            body = (
+                f'data: {{"choices":[{{"delta":{{"content":{json.dumps(reply)}}}}}]}}\n\n'
+                "data: [DONE]\n\n"
+            ).encode()
             self.send_response(200)
             self.send_header("content-type", "text/event-stream")
             self.send_header("content-length", str(len(body)))
@@ -133,12 +136,13 @@ def run_smoke_test() -> dict[str, Any]:
     agent_url = f"http://{HOST}:{agent_port}"
     web_url = f"http://{HOST}:{web_port}"
     processes: list[subprocess.Popen[bytes]] = []
-    model_request: dict[str, Any] = {}
-    model_server, model_thread = _start_fake_model(model_request)
+    model_requests: list[dict[str, Any]] = []
+    model_server, model_thread = _start_fake_model(model_requests)
     model_port = int(model_server.server_address[1])
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         config_path = Path(temporary_directory) / "llm.yaml"
+        database_path = Path(temporary_directory) / "data" / "agent.db"
         config_path.write_text(
             f"""\
 llm:
@@ -175,6 +179,8 @@ llm:
             agent_environment = os.environ.copy()
             agent_environment["MALL_SERVICE_URL"] = mall_url
             agent_environment["AGENT_CONFIG_FILE"] = str(config_path)
+            agent_environment["AGENT_DB_FILE"] = str(database_path)
+            agent_environment["PYTHONPATH"] = str(ROOT / "agent-service/src")
             agent_environment["NO_PROXY"] = f"{HOST},localhost"
             agent_environment["no_proxy"] = f"{HOST},localhost"
             processes.append(
@@ -224,19 +230,53 @@ llm:
 
             products = _wait_for_json(f"{web_url}/api/products", processes)
             assert len(products["items"]) >= 2
-            status, headers, body = _request(
-                f"{web_url}/api/chat",
+            initial_conversations = _request_json(f"{web_url}/api/conversations")
+            assert initial_conversations == []
+            created = _request_json(
+                f"{web_url}/api/conversations",
                 method="POST",
-                payload={"messages": [{"role": "user", "content": "hello"}]},
+                payload={"user_id": 999},
+            )
+            assert "user_id" not in created
+
+            status, headers, first_body = _request(
+                f"{web_url}/api/conversations/{created['id']}/turns",
+                method="POST",
+                payload={"content": "first question", "user_id": 999},
             )
             assert status == 200
             assert headers["content-type"].startswith("text/event-stream")
-            response_body = body.decode("utf-8")
-            assert 'data: {"content": "Smoke "}' in response_body
-            assert 'data: {"content": "reply"}' in response_body
-            assert response_body.endswith("event: done\ndata: {}\n\n")
-            model_request["response_body"] = response_body
-            return model_request
+            first_response = first_body.decode("utf-8")
+            assert 'data: {"content": "First reply"}' in first_response
+            assert first_response.endswith("event: done\ndata: {}\n\n")
+
+            listed = _request_json(f"{web_url}/api/conversations")
+            assert listed[0]["id"] == created["id"]
+            detail = _request_json(
+                f"{web_url}/api/conversations/{created['id']}"
+            )
+            assert detail["turns"][0]["assistant_content"] == "First reply"
+
+            second_status, second_headers, second_body = _request(
+                f"{web_url}/api/conversations/{created['id']}/turns",
+                method="POST",
+                payload={"content": "second question"},
+            )
+            assert second_status == 200
+            assert second_headers["content-type"].startswith("text/event-stream")
+            second_response = second_body.decode("utf-8")
+            assert 'data: {"content": "Second reply"}' in second_response
+            assert second_response.endswith("event: done\ndata: {}\n\n")
+            assert len(model_requests) == 2
+
+            return {
+                "initial_conversations": initial_conversations,
+                "created_conversation": created,
+                "detail": detail,
+                "model_requests": model_requests,
+                "response_bodies": [first_response, second_response],
+                "database_exists": database_path.is_file(),
+            }
         finally:
             _stop(processes)
             model_server.shutdown()
