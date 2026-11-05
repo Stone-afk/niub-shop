@@ -1,5 +1,6 @@
 """Secret-safe YAML configuration for the streaming model provider."""
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -49,8 +50,8 @@ def load_llm_config(path: str | Path) -> LLMConfig:
 
     try:
         document = yaml.safe_load(source)
-    except yaml.YAMLError as error:
-        raise ConfigurationError("LLM config must contain valid YAML") from error
+    except yaml.YAMLError:
+        raise ConfigurationError("LLM config must contain valid YAML") from None
 
     if not isinstance(document, dict):
         raise ConfigurationError("LLM config root must be a mapping")
@@ -79,10 +80,16 @@ def load_llm_config(path: str | Path) -> LLMConfig:
         raise ConfigurationError("llm.provider must be openai-compatible")
 
     base_url = _required_string(values, "base_url").rstrip("/")
-    parsed_url = urlsplit(base_url)
+    try:
+        parsed_url = urlsplit(base_url)
+        hostname = parsed_url.hostname
+        parsed_url.port
+    except ValueError:
+        raise ConfigurationError("llm.base_url must be an HTTP(S) URL") from None
     if (
         parsed_url.scheme not in {"http", "https"}
         or not parsed_url.netloc
+        or not hostname
         or parsed_url.username is not None
         or parsed_url.password is not None
         or parsed_url.query
@@ -95,6 +102,7 @@ def load_llm_config(path: str | Path) -> LLMConfig:
         isinstance(timeout_value, bool)
         or not isinstance(timeout_value, (int, float))
         or timeout_value <= 0
+        or not math.isfinite(timeout_value)
     ):
         raise ConfigurationError("llm.timeout_seconds must be a positive number")
 

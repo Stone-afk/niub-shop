@@ -1,6 +1,7 @@
 import json
 from collections.abc import Callable
 
+import anyio
 import httpx
 import pytest
 
@@ -40,6 +41,37 @@ class TrackingTransport(httpx.MockTransport):
     async def aclose(self) -> None:
         self.closed = True
         await super().aclose()
+
+
+class BlockingTransport(httpx.AsyncBaseTransport):
+    def __init__(self) -> None:
+        self.started = anyio.Event()
+        self.closed = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.started.set()
+        await anyio.sleep_forever()
+        raise AssertionError("unreachable")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class DelayedCloseStream(ChunkedStream):
+    def __init__(self) -> None:
+        super().__init__([b"data: [DONE]\n\n"])
+        self.close_started = anyio.Event()
+        self.allow_close = anyio.Event()
+
+    async def aclose(self) -> None:
+        self.close_started.set()
+        await self.allow_close.wait()
+        self.closed = True
+
+
+class FailingCloseStream(ChunkedStream):
+    async def aclose(self) -> None:
+        raise RuntimeError("response close failed")
 
 
 def config() -> LLMConfig:
@@ -216,6 +248,52 @@ async def test_connection_failure_is_safe_and_closes_client() -> None:
         )
 
     assert SECRET not in str(caught.value)
+    assert transport.closed
+
+
+@pytest.mark.anyio
+async def test_cancellation_while_opening_stream_closes_client() -> None:
+    transport = BlockingTransport()
+    provider = OpenAICompatibleProvider(config(), transport=transport)
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(provider.open_stream, MESSAGES)
+        await transport.started.wait()
+        task_group.cancel_scope.cancel()
+
+    assert transport.closed
+
+
+@pytest.mark.anyio
+async def test_cancellation_during_close_still_releases_all_resources() -> None:
+    body_stream = DelayedCloseStream()
+    transport = TrackingTransport(lambda _request: sse_response(body_stream))
+    stream = await OpenAICompatibleProvider(config(), transport=transport).open_stream(
+        MESSAGES
+    )
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(stream.aclose)
+        await body_stream.close_started.wait()
+        task_group.cancel_scope.cancel()
+        body_stream.allow_close.set()
+
+    await stream.aclose()
+    assert body_stream.closed
+    assert transport.closed
+
+
+@pytest.mark.anyio
+async def test_response_close_failure_still_closes_client() -> None:
+    body_stream = FailingCloseStream([])
+    transport = TrackingTransport(lambda _request: sse_response(body_stream))
+    stream = await OpenAICompatibleProvider(config(), transport=transport).open_stream(
+        MESSAGES
+    )
+
+    with pytest.raises(RuntimeError, match="response close failed"):
+        await stream.aclose()
+
     assert transport.closed
 
 

@@ -1,3 +1,4 @@
+import traceback
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,25 @@ def test_rejects_invalid_yaml_shapes(
         load_llm_config(write_config(tmp_path, body))
 
 
+def test_malformed_yaml_traceback_does_not_expose_source_secret(
+    tmp_path: Path,
+) -> None:
+    exposed_secret = "synthetic-secret-must-stay-private"
+    body = f"llm:\n  api_key: [{exposed_secret}\n"
+
+    with pytest.raises(ConfigurationError) as caught:
+        load_llm_config(write_config(tmp_path, body))
+
+    rendered = "".join(
+        traceback.format_exception(
+            caught.type,
+            caught.value,
+            caught.tb,
+        )
+    )
+    assert exposed_secret not in rendered
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -117,13 +137,22 @@ def test_rejects_unsupported_provider(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("base_url", ["ftp://example.test", "example.test", "/api"])
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "ftp://example.test",
+        "example.test",
+        "/api",
+        "https://example.test:not-a-port",
+        "https://[invalid-ipv6",
+    ],
+)
 def test_rejects_non_http_base_url(tmp_path: Path, base_url: str) -> None:
     with pytest.raises(ConfigurationError, match="base_url"):
         load_llm_config(write_config(tmp_path, valid_yaml(base_url=base_url)))
 
 
-@pytest.mark.parametrize("timeout", [0, -1, "fast", True])
+@pytest.mark.parametrize("timeout", [0, -1, "fast", True, ".nan", ".inf"])
 def test_rejects_invalid_timeout(tmp_path: Path, timeout: object) -> None:
     with pytest.raises(ConfigurationError, match="timeout_seconds"):
         load_llm_config(

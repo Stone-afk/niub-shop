@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from typing import Literal, Protocol, TypedDict, runtime_checkable
 
+import anyio
 import httpx
 
 from .config import LLMConfig
@@ -44,6 +45,25 @@ class ModelStream(Protocol):
 class StreamingModelProvider(Protocol):
     async def open_stream(self, messages: Sequence[ModelMessage]) -> ModelStream:
         ...
+
+
+async def _close_client_safely(client: httpx.AsyncClient) -> None:
+    with anyio.CancelScope(shield=True):
+        try:
+            await client.aclose()
+        except BaseException:
+            pass
+
+
+async def _close_response_and_client(
+    response: httpx.Response,
+    client: httpx.AsyncClient,
+) -> None:
+    with anyio.CancelScope(shield=True):
+        try:
+            await response.aclose()
+        finally:
+            await client.aclose()
 
 
 class _OpenAIModelStream:
@@ -97,9 +117,8 @@ class _OpenAIModelStream:
     async def aclose(self) -> None:
         if self._closed:
             return
+        await _close_response_and_client(self._response, self._client)
         self._closed = True
-        await self._response.aclose()
-        await self._client.aclose()
 
 
 class OpenAICompatibleProvider:
@@ -117,36 +136,43 @@ class OpenAICompatibleProvider:
             timeout=self._config.timeout_seconds,
             transport=self._transport,
         )
-        request = client.build_request(
-            "POST",
-            f"{self._config.base_url}/chat/completions",
-            headers={
-                "authorization": f"Bearer {self._config.api_key}",
-                "content-type": "application/json",
-            },
-            json={
-                "model": self._config.model,
-                "messages": list(messages),
-                "stream": True,
-            },
-        )
         try:
+            request = client.build_request(
+                "POST",
+                f"{self._config.base_url}/chat/completions",
+                headers={
+                    "authorization": f"Bearer {self._config.api_key}",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": self._config.model,
+                    "messages": list(messages),
+                    "stream": True,
+                },
+            )
             response = await client.send(request, stream=True)
         except httpx.HTTPError as error:
-            await client.aclose()
+            await _close_client_safely(client)
             raise ModelUpstreamError("Model service is unavailable") from error
+        except BaseException:
+            await _close_client_safely(client)
+            raise
 
         if not response.is_success:
             status_code = response.status_code
-            await response.aclose()
-            await client.aclose()
+            try:
+                await _close_response_and_client(response, client)
+            except BaseException:
+                pass
             raise ModelUpstreamError(
                 f"Model service rejected the request with status {status_code}"
             )
 
         if "text/event-stream" not in response.headers.get("content-type", ""):
-            await response.aclose()
-            await client.aclose()
+            try:
+                await _close_response_and_client(response, client)
+            except BaseException:
+                pass
             raise ModelUpstreamError("Model service returned an invalid content type")
 
         return _OpenAIModelStream(client, response)
