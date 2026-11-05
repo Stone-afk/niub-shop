@@ -7,7 +7,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import FastAPI
+import anyio
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
@@ -70,6 +71,56 @@ class _UnconfiguredProvider:
 class _UnconfiguredRecommendationAgent:
     async def generate(self, messages: list[ModelMessage]):
         raise ModelUpstreamError("Model service is not configured")
+
+
+class _ClosingStreamingResponse(StreamingResponse):
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                with anyio.CancelScope(shield=True):
+                    await close()
+
+
+async def _run_until_disconnect(
+    request: Request,
+    operation: Callable[[], Awaitable[PersistedTurnStream]],
+) -> tuple[bool, PersistedTurnStream | None]:
+    stream: PersistedTurnStream | None = None
+    operation_error: BaseException | None = None
+    disconnected = False
+
+    async with anyio.create_task_group() as task_group:
+        async def run_operation() -> None:
+            nonlocal stream, operation_error
+            try:
+                stream = await operation()
+            except BaseException as error:
+                operation_error = error
+            finally:
+                task_group.cancel_scope.cancel()
+
+        async def watch_disconnect() -> None:
+            nonlocal disconnected
+            while True:
+                message = await request.receive()
+                if message["type"] == "http.disconnect":
+                    disconnected = True
+                    task_group.cancel_scope.cancel()
+                    return
+
+        task_group.start_soon(run_operation)
+        task_group.start_soon(watch_disconnect)
+
+    if disconnected:
+        if stream is not None:
+            await stream.aclose()
+        return True, None
+    if operation_error is not None:
+        raise operation_error
+    return False, stream
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
@@ -273,6 +324,7 @@ def create_app(
 
     async def stream_result(
         operation: Callable[[], Awaitable[PersistedTurnStream]],
+        request: Request,
     ) -> StreamingResponse | JSONResponse:
         if not persistent_model_configured:
             return _error_response(
@@ -281,7 +333,13 @@ def create_app(
                 "Model service is not configured",
             )
         try:
-            stream = await operation()
+            disconnected, stream = await _run_until_disconnect(request, operation)
+            if disconnected:
+                return _error_response(
+                    499,
+                    "client_disconnected",
+                    "Client disconnected / 客户端已断开",
+                )
         except ConversationNotFound:
             return _error_response(
                 404, "conversation_not_found", "Conversation was not found"
@@ -330,28 +388,39 @@ def create_app(
                 "recommendation_invalid",
                 "Recommendation result is invalid / 推荐结果无效",
             )
-        return StreamingResponse(
+        assert stream is not None
+        return _ClosingStreamingResponse(
             _persisted_model_events(stream),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
 
     @application.post("/conversations/{conversation_id}/turns")
-    async def create_turn(conversation_id: str, request: TurnRequest):
+    async def create_turn(
+        conversation_id: str,
+        request: TurnRequest,
+        http_request: Request,
+    ):
         return await stream_result(
             lambda: service.open_turn(
                 resolve_current_user_id(), conversation_id, request.content
-            )
+            ),
+            http_request,
         )
 
     @application.post(
         "/conversations/{conversation_id}/turns/{turn_id}/retry"
     )
-    async def retry_turn(conversation_id: str, turn_id: str):
+    async def retry_turn(
+        conversation_id: str,
+        turn_id: str,
+        http_request: Request,
+    ):
         return await stream_result(
             lambda: service.retry_turn(
                 resolve_current_user_id(), conversation_id, turn_id
-            )
+            ),
+            http_request,
         )
 
     return application

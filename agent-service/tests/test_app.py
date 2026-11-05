@@ -1,6 +1,8 @@
 from collections.abc import AsyncIterator, Callable, Sequence
+import json
 from pathlib import Path
 
+import anyio
 import httpx
 import pytest
 
@@ -109,6 +111,70 @@ class ToolCapableProvider(RecordingProvider):
 class UnusedProductTool:
     async def search(self, filters):
         raise AssertionError("plain conversation must not search products")
+
+
+class BlockingRecommendationAgent:
+    def __init__(self) -> None:
+        self.started = anyio.Event()
+        self.cancelled = False
+
+    async def generate(self, messages):
+        self.started.set()
+        try:
+            await anyio.sleep_forever()
+        finally:
+            self.cancelled = True
+
+
+async def invoke_asgi_disconnect(
+    application,
+    path: str,
+    payload: dict[str, object],
+    *,
+    disconnect_ready: anyio.Event,
+    block_first_body: bool = False,
+) -> list[dict[str, object]]:
+    request_sent = False
+    sent: list[dict[str, object]] = []
+
+    async def receive():
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": json.dumps(payload).encode(),
+                "more_body": False,
+            }
+        await disconnect_ready.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+        if (
+            block_first_body
+            and message["type"] == "http.response.body"
+            and message.get("body")
+        ):
+            disconnect_ready.set()
+            await anyio.sleep_forever()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    }
+    with anyio.fail_after(2):
+        await application(scope, receive, send)
+    return sent
 
 
 @pytest.fixture
@@ -635,3 +701,60 @@ async def test_network_stream_failure_emits_safe_error_event(tmp_path: Path) -> 
         '"message": "Model stream failed"}\n\n',
     ]
     assert network_stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_disconnect_during_buffered_generation_cancels_and_fails_turn(
+    tmp_path: Path,
+) -> None:
+    repository = ConversationRepository(tmp_path / "agent.db")
+    repository.initialize()
+    conversation = repository.create_conversation(1)
+    agent = BlockingRecommendationAgent()
+    application = create_app(
+        RecordingProvider(), repository=repository, recommendation_agent=agent
+    )
+
+    sent = await invoke_asgi_disconnect(
+        application,
+        f"/conversations/{conversation.id}/turns",
+        {"content": "问题"},
+        disconnect_ready=agent.started,
+    )
+
+    stored = repository.get_conversation(1, conversation.id).turns[0]
+    assert agent.cancelled is True
+    assert stored.status == "failed"
+    assert stored.assistant_content is None
+    assert stored.recommended_product_ids == ()
+    assert sent[0]["status"] == 499
+
+
+@pytest.mark.anyio
+async def test_disconnect_while_sending_first_delta_closes_stream_and_fails_turn(
+    tmp_path: Path,
+) -> None:
+    repository = ConversationRepository(tmp_path / "agent.db")
+    repository.initialize()
+    conversation = repository.create_conversation(1)
+    application = create_app(
+        RecordingProvider(),
+        repository=repository,
+        recommendation_agent=FakeRecommendationAgent(
+            RecommendationResult("A" * 100, ("mug",))
+        ),
+    )
+    first_body = anyio.Event()
+
+    await invoke_asgi_disconnect(
+        application,
+        f"/conversations/{conversation.id}/turns",
+        {"content": "问题"},
+        disconnect_ready=first_body,
+        block_first_body=True,
+    )
+
+    stored = repository.get_conversation(1, conversation.id).turns[0]
+    assert stored.status == "failed"
+    assert stored.assistant_content is None
+    assert stored.recommended_product_ids == ()

@@ -181,6 +181,27 @@ def test_duplicate_recommendations_are_rejected_before_turn_completion(
     assert stored.recommended_product_ids == ()
 
 
+def test_recommendation_insert_failure_rolls_back_completed_turn(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    conversation = repo.create_conversation(1)
+    turn = repo.create_turn(1, conversation.id, "问题")
+    with sqlite3.connect(repo.path) as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_recommendation BEFORE INSERT
+               ON turn_recommendations BEGIN
+               SELECT RAISE(ABORT, 'forced recommendation failure');
+               END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced recommendation failure"):
+        repo.complete_turn(1, conversation.id, turn.id, "回答", ["mug"])
+
+    stored = repo.get_conversation(1, conversation.id).turns[0]
+    assert stored.status == "pending"
+    assert stored.assistant_content is None
+    assert stored.recommended_product_ids == ()
+
+
 def test_initialize_upgrades_existing_database_without_losing_turns(
     tmp_path: Path,
 ) -> None:

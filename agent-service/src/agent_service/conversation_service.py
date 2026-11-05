@@ -58,6 +58,7 @@ class BufferedRecommendationStream:
         self.turn = turn
         self.chunk_size = chunk_size
         self.recommended_product_ids = result.product_ids
+        self._finished = False
 
     def __aiter__(self) -> AsyncIterator[str]:
         return self._iterate()
@@ -78,6 +79,7 @@ class BufferedRecommendationStream:
                 )
             )
             completed = True
+            self._finished = True
         except BaseException:
             if not completed:
                 with anyio.CancelScope(shield=True):
@@ -91,7 +93,25 @@ class BufferedRecommendationStream:
                         ),
                         abandon_on_cancel=False,
                     )
+                self._finished = True
             raise
+
+    async def aclose(self) -> None:
+        """Fail an unopened or partially consumed turn during HTTP cleanup."""
+        if self._finished:
+            return
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(
+                partial(
+                    self.repository.fail_turn,
+                    self.user_id,
+                    self.conversation_id,
+                    self.turn.id,
+                    "model_stream_failed",
+                ),
+                abandon_on_cancel=False,
+            )
+        self._finished = True
 
 
 PersistedTurnStream = BufferedRecommendationStream

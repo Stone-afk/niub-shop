@@ -179,9 +179,9 @@ The persisted conversation API uses OpenAI-compatible native tool calling with t
 
 `search_products` accepts optional `keyword`, `category`, `min_price_cents`, `max_price_cents`, `sort` (`relevance | price_asc | price_desc`), and `limit` (1–10, default 5). The model may refine its filters but can search at most three times per turn. Unknown fields, negative prices, inverted ranges, and invalid limits are rejected before Mall access.
 
-最终提交包含自然语言 `answer` 和最多十个 `product_ids`。每个 ID 必须来自本轮成功搜索结果；模型虚构、重复或未经搜索的 ID 会使整轮失败，不会部分保存。工具参数、原始工具结果和内部调用轨迹不会作为聊天消息持久化。
+最终提交包含自然语言 `answer` 和最多十个 `product_ids`。每个 ID 必须来自本轮成功搜索结果；重复 ID 会按首次出现顺序去重，虚构或未经搜索的 ID 会使整轮失败，不会部分保存。工具参数、原始工具结果和内部调用轨迹不会作为聊天消息持久化。
 
-The final submission contains a natural-language `answer` and up to ten `product_ids`. Every ID must come from a successful search in the same turn. Invented, duplicate, or unsearched IDs invalidate the whole turn; nothing is partially persisted. Tool arguments, raw tool results, and internal traces are not stored as chat messages.
+The final submission contains a natural-language `answer` and up to ten `product_ids`. Every ID must come from a successful search in the same turn. Duplicate IDs are removed in first-seen order; invented or unsearched IDs invalidate the whole turn, and nothing is partially persisted. Tool arguments, raw tool results, and internal traces are not stored as chat messages.
 
 conversation 成功流的事件顺序固定如下，即使没有推荐商品也会发送一次空数组：
 
