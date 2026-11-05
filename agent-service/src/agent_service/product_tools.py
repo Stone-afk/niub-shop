@@ -67,7 +67,7 @@ class MallProductSearchTool:
     ) -> tuple[ProductData, ...]:
         products = await anyio.to_thread.run_sync(self._client.list_products)
         matches: list[tuple[int, int, ProductData]] = []
-        keyword = filters.keyword.casefold() if filters.keyword else None
+        keyword = _normalize_keyword(filters.keyword) if filters.keyword else None
         category = filters.category.casefold() if filters.category else None
 
         for position, product in enumerate(products):
@@ -102,6 +102,7 @@ class MallProductSearchTool:
 
 
 def _relevance_score(product: ProductData, keyword: str) -> int:
+    keyword = _normalize_keyword(keyword)
     score = 0
     if keyword in product.name.casefold():
         score += 3
@@ -109,3 +110,18 @@ def _relevance_score(product: ProductData, keyword: str) -> int:
         score += 2
     score += sum(keyword in tag.casefold() for tag in product.tags)
     return score
+
+
+def _normalize_keyword(keyword: str) -> str:
+    """Normalize common conversational suffixes before catalog matching.
+
+    Users naturally ask for terms such as ``杯子`` while a catalog may use the
+    shorter product stem ``杯`` (for example, ``陶瓷马克杯``). Removing a
+    trailing classifier keeps matching forgiving without turning a structured
+    keyword search into an overly broad fuzzy search.
+    """
+
+    normalized = keyword.strip().casefold()
+    if len(normalized) > 1 and normalized[-1] in {"子", "儿", "类", "款"}:
+        normalized = normalized[:-1]
+    return normalized

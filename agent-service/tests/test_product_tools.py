@@ -96,6 +96,19 @@ async def test_relevance_is_deterministic_and_matches_name_description_then_tags
 
 
 @pytest.mark.anyio
+async def test_normalizes_common_chinese_classifier_suffixes() -> None:
+    client = StubMallClient(
+        [product("mug", name="陶瓷马克杯", description="适合咖啡与茶")]
+    )
+
+    results = await MallProductSearchTool(client).search(
+        ProductSearchFilters(keyword="杯子")
+    )
+
+    assert [item.id for item in results] == ["mug"]
+
+
+@pytest.mark.anyio
 async def test_sorts_price_both_directions_and_applies_limit() -> None:
     products = [
         product("middle-first", name="A", price_cents=200),

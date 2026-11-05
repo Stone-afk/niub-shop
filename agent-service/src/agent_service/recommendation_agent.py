@@ -160,6 +160,15 @@ async def _submit_product_recommendation(
     """Submit the final answer and product IDs returned by this turn's searches."""
 
     state = run_context.context
+    # Some OpenAI-compatible providers serialize newlines as a literal ``\\n``
+    # sequence in tool arguments. Normalize that transport artifact before it
+    # is persisted and streamed to the Web client.
+    answer = (
+        answer.replace("\\\\r\\\\n", "\n")
+        .replace("\\\\n", "\n")
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+    )
     try:
         submission = _RecommendationSubmission.model_validate(
             {"answer": answer, "product_ids": product_ids}

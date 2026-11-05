@@ -101,6 +101,30 @@ async def test_sdk_runner_searches_then_submits_grounded_recommendation() -> Non
 
 
 @pytest.mark.anyio
+async def test_submission_decodes_literal_newlines_from_provider_arguments() -> None:
+    model = ScriptedModel(
+        [
+            [function_call("search_products", {}, call_id="search-1")],
+            [
+                function_call(
+                    "submit_product_recommendation",
+                    {
+                        "answer": "第一行\\n第二行",
+                        "product_ids": ["mug"],
+                    },
+                    call_id="submit-1",
+                )
+            ],
+        ]
+    )
+    tool = RecordingProductTool([(item("mug", "Ceramic Mug"),)])
+
+    result = await RecommendationAgent(model, tool).generate([])
+
+    assert result.answer == "第一行\n第二行"
+
+
+@pytest.mark.anyio
 async def test_empty_search_can_refine_before_submitting() -> None:
     model = ScriptedModel(
         [
