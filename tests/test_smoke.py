@@ -15,7 +15,20 @@ class ThreeServiceSmokeTests(unittest.TestCase):
                 _node_executable()
 
     def test_product_and_chat_requests_cross_all_service_boundaries(self) -> None:
-        run_smoke_test()
+        model_request = run_smoke_test()
+
+        self.assertEqual(
+            model_request["authorization"],
+            "Bearer smoke-test-key",
+        )
+        self.assertEqual(
+            model_request["messages"],
+            [
+                {"role": "system", "content": "You are the smoke-test assistant."},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        self.assertNotIn("smoke-test-key", str(model_request["response_body"]))
 
 
 if __name__ == "__main__":

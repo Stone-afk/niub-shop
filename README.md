@@ -50,6 +50,10 @@ mall-service/.venv/bin/python -m pip install -e './mall-service[test]'
 python3.11 -m venv agent-service/.venv
 agent-service/.venv/bin/python -m pip install -e './agent-service[test]'
 
+cp agent-service/config/llm.example.yaml agent-service/config/llm.local.yaml
+# 编辑 llm.local.yaml，填入新生成的 API key、base_url 和 model。
+# Edit llm.local.yaml with a newly generated API key, base_url, and model.
+
 cd web
 npm install
 cd ..
@@ -70,9 +74,15 @@ cd mall-service
 
 ```bash
 cd agent-service
+AGENT_CONFIG_FILE=./config/llm.local.yaml \
 MALL_SERVICE_URL=http://localhost:8001 \
-  .venv/bin/uvicorn agent_service.app:app --reload --port 8002
+  .venv/bin/uvicorn agent_service.app:app \
+    --reload --reload-include '*.yaml' --port 8002
 ```
+
+`--reload` 监视 Python 文件；安装的 `uvicorn[standard]` 还会通过 `--reload-include '*.yaml'` 监视 YAML。修改配置后，Uvicorn 会重启进程并重新读取配置，这属于开发环境热重载，并不是在运行中的进程内动态修改配置。
+
+`--reload` watches Python files. With the installed `uvicorn[standard]`, `--reload-include '*.yaml'` also watches YAML files. A config edit restarts the process and reloads the file; this is development-time hot reload, not an in-process configuration mutation.
 
 ### 3. Web 应用 / Web application
 
@@ -93,10 +103,15 @@ Open [http://localhost:3000](http://localhost:3000).
 | --- | --- | --- |
 | `MALL_SERVICE_URL` | `agent-service`, `web` | `http://localhost:8001` |
 | `AGENT_SERVICE_URL` | `web` | `http://localhost:8002` |
+| `AGENT_CONFIG_FILE` | `agent-service` | 未设置 / unset |
 
 这些变量只在服务端使用，不会作为 `NEXT_PUBLIC_*` 暴露给浏览器。
 
-These variables are server-only and are never exposed to the browser as `NEXT_PUBLIC_*` values.
+These variables are server-only and are never exposed to the browser as `NEXT_PUBLIC_*` values. If `AGENT_CONFIG_FILE` is unset, health checks still work, but `/chat` returns `503 model_not_configured`.
+
+`llm.local.yaml` 已被 Git 忽略。不要提交、打印或在聊天中粘贴真实密钥；如果密钥曾暴露，请立即在供应商控制台撤销并重新生成。
+
+`llm.local.yaml` is Git-ignored. Never commit, print, or paste a real key into chat. If a key has been exposed, revoke and rotate it immediately in the provider console.
 
 ## HTTP 接口 / HTTP APIs
 
@@ -115,10 +130,14 @@ curl http://localhost:8001/products
 - `POST /chat`
 
 ```bash
-curl -X POST http://localhost:8002/chat \
+curl -N -X POST http://localhost:8002/chat \
   -H 'content-type: application/json' \
-  -d '{"message":"有哪些商品？"}'
+  -d '{"messages":[{"role":"user","content":"有哪些商品？"}]}'
 ```
+
+成功响应是命名 SSE 事件流：多个 `event: delta`，最后是 `event: done`。请求中的 `messages` 是完整多轮历史；服务会在最前面加入 YAML 中的 `system_prompt`。
+
+A successful response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the YAML `system_prompt`.
 
 ### Web BFF · `:3000`
 
@@ -143,9 +162,9 @@ npm run build
 cd ..
 ```
 
-生产构建完成后，可运行三模块冒烟测试；它会在空闲端口启动并清理三个临时服务：
+生产构建完成后，可运行端到端冒烟测试；它会在空闲端口启动并清理 Mall、Agent、Web 和一个本地假的 OpenAI-compatible SSE 模型服务，不会调用或计费真实模型：
 
-After the production build, run the three-module smoke test. It starts all three services on free ports and cleans them up afterward:
+After the production build, run the end-to-end smoke test. It starts Mall, Agent, Web, and a local fake OpenAI-compatible SSE model on free ports, then cleans them up. It never calls or bills a real model:
 
 ```bash
 python3.11 -m unittest discover -s tests -p 'test_smoke.py' -v
@@ -164,9 +183,9 @@ docs/            # Bilingual design and implementation documents / 中英双语�
 
 ## 当前范围 / Current scope
 
-本阶段不包含数据库、用户认证、购物车、结算、订单、支付或生产模型厂商集成。
+本阶段不包含数据库、用户认证、购物车、结算、订单、支付、模型工具调用、重试或对话持久化。模型接入使用通用 OpenAI-compatible HTTP 协议，不绑定厂商 SDK。
 
-This phase intentionally excludes a database, authentication, cart, checkout, orders, payments, and production model-vendor integration.
+This phase excludes a database, authentication, cart, checkout, orders, payments, model tool calls, retries, and conversation persistence. Model access uses the generic OpenAI-compatible HTTP protocol without a vendor SDK.
 
 ## 许可证 / License
 
