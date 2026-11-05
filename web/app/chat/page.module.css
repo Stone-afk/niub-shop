@@ -1,0 +1,255 @@
+.page {
+  min-height: 100vh;
+  padding: 32px 20px;
+  background:
+    radial-gradient(circle at 8% 5%, rgba(226, 138, 74, 0.22), transparent 30%),
+    linear-gradient(160deg, #f8f6f0 0%, #e9e4d9 100%);
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: auto minmax(360px, 1fr) auto auto;
+  width: min(920px, 100%);
+  min-height: calc(100vh - 64px);
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(93, 95, 81, 0.22);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 24px 70px rgba(56, 53, 44, 0.12);
+  backdrop-filter: blur(18px);
+}
+
+.header {
+  padding: 28px 32px 24px;
+  border-bottom: 1px solid #d8d2c6;
+}
+
+.backLink {
+  color: #93451f;
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.eyebrow {
+  margin: 28px 0 8px;
+  color: #a44d22;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.titleRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.titleRow h1 {
+  margin: 0;
+  font-family: Georgia, "Noto Serif TC", serif;
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+}
+
+.titleRow p {
+  max-width: 650px;
+  margin: 12px 0 0;
+  color: #657068;
+  line-height: 1.65;
+}
+
+.badge {
+  flex: none;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #e9f0eb;
+  color: #315744;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  max-height: 58vh;
+  padding: 30px 32px;
+  overflow-y: auto;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  min-height: 280px;
+  color: #6a756d;
+  text-align: center;
+}
+
+.empty strong {
+  color: #27372f;
+  font-family: Georgia, "Noto Serif TC", serif;
+  font-size: 1.35rem;
+}
+
+.message {
+  width: min(76%, 650px);
+}
+
+.messageLabel {
+  display: block;
+  margin: 0 8px 6px;
+  color: #78827b;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.message p {
+  margin: 0;
+  padding: 15px 18px;
+  border-radius: 18px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.userMessage {
+  align-self: flex-end;
+}
+
+.userMessage .messageLabel {
+  text-align: right;
+}
+
+.userMessage p {
+  border-bottom-right-radius: 5px;
+  background: #1d2b24;
+  color: #f8f6f0;
+}
+
+.agentMessage {
+  align-self: flex-start;
+}
+
+.agentMessage p {
+  border: 1px solid #d6d0c5;
+  border-bottom-left-radius: 5px;
+  background: #fffdf8;
+  color: #27372f;
+}
+
+.error {
+  margin: 0 32px 14px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: #f8e5df;
+  color: #8c2f20;
+  font-weight: 700;
+}
+
+.composer {
+  padding: 22px 32px 28px;
+  border-top: 1px solid #d8d2c6;
+  background: rgba(248, 246, 240, 0.92);
+}
+
+.composer label {
+  display: block;
+  margin-bottom: 8px;
+  color: #45534b;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.composerRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.composer textarea {
+  width: 100%;
+  min-height: 58px;
+  resize: vertical;
+  padding: 14px 16px;
+  border: 1px solid #bcb5a9;
+  border-radius: 14px;
+  background: #fff;
+  color: #18231e;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.composer textarea:focus {
+  border-color: #a44d22;
+  outline: 3px solid rgba(226, 138, 74, 0.22);
+}
+
+.composer button {
+  min-width: 150px;
+  padding: 0 22px;
+  border: 0;
+  border-radius: 14px;
+  background: #e28a4a;
+  color: #1d2b24;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.composer button:disabled,
+.composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@media (max-width: 680px) {
+  .page {
+    padding: 0;
+  }
+
+  .shell {
+    min-height: 100vh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .header,
+  .conversation,
+  .composer {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .titleRow {
+    display: block;
+  }
+
+  .badge {
+    display: inline-block;
+    margin-top: 16px;
+  }
+
+  .message {
+    width: 88%;
+  }
+
+  .composerRow {
+    grid-template-columns: 1fr;
+  }
+
+  .composer button {
+    min-height: 48px;
+  }
+}
