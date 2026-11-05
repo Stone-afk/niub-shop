@@ -22,7 +22,8 @@ function handleFrame(frame: string, onDelta: (content: string) => void): boolean
     .map((line) => readField(line, "event"))
     .find((value) => value !== null);
   if (event === "done") return true;
-  if (event !== "delta") return false;
+  if (event === "error") throw new Error("Model stream failed");
+  if (event !== "delta") throw new Error("Invalid chat stream");
 
   const data = lines
     .map((line) => readField(line, "data"))
@@ -39,16 +40,12 @@ function handleFrame(frame: string, onDelta: (content: string) => void): boolean
 }
 
 
-export async function streamChat(
-  messages: ChatMessage[],
+export async function consumeChatStream(
+  response: Response,
   onDelta: (content: string) => void,
+  requestError = "Chat request failed",
 ): Promise<void> {
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ messages }),
-  });
-  if (!response.ok) throw new Error("Chat request failed");
+  if (!response.ok) throw new Error(requestError);
   if (!response.body) throw new Error("Chat stream unavailable");
 
   const reader = response.body.getReader();
@@ -78,4 +75,17 @@ export async function streamChat(
 
     if (done) throw new Error("Chat stream ended unexpectedly");
   }
+}
+
+
+export async function streamChat(
+  messages: ChatMessage[],
+  onDelta: (content: string) => void,
+): Promise<void> {
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  return consumeChatStream(response, onDelta);
 }
