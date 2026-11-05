@@ -228,3 +228,6 @@ __marimo__/
 web/.npm-cache/
 web/node_modules/
 web/.next/
+
+# Local Agent SQLite data
+/agent-service/data/
