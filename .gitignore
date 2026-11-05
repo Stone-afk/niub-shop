@@ -15,6 +15,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!web/lib/
+!web/lib/**
 lib64/
 parts/
 sdist/
@@ -218,3 +220,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# JetBrains IDEs
+.idea/
+
+# Project-local npm cache
+web/.npm-cache/
