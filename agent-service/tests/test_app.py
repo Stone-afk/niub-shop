@@ -206,6 +206,13 @@ def make_client(
     )
 
 
+def write_prompt_files(tmp_path: Path, system: str = "YAML 中的系统提示") -> None:
+    (tmp_path / "system.md").write_text(system, encoding="utf-8")
+    (tmp_path / "recommendation-policy.md").write_text(
+        "推荐策略", encoding="utf-8"
+    )
+
+
 def make_persistent_client(
     tmp_path: Path,
     provider: StreamingModelProvider | None = None,
@@ -326,10 +333,12 @@ llm:
   api_key: local-test-key
   model: example-model
   timeout_seconds: 15
-  system_prompt: YAML 中的系统提示
+  prompt_file: system.md
+  recommendation_policy_prompt_file: recommendation-policy.md
 """,
         encoding="utf-8",
     )
+    write_prompt_files(tmp_path)
     provider = RecordingProvider(("configured",))
     received_configs: list[LLMConfig] = []
 
@@ -353,6 +362,38 @@ llm:
 
 
 @pytest.mark.anyio
+async def test_chat_returns_prompt_error_without_calling_model(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        """\
+llm:
+  provider: openai-compatible
+  base_url: https://model.example/v1
+  api_key: local-test-key
+  model: example-model
+  timeout_seconds: 15
+  prompt_file: missing.md
+  recommendation_policy_prompt_file: recommendation-policy.md
+""",
+        encoding="utf-8",
+    )
+    write_prompt_files(tmp_path)
+    provider = RecordingProvider(("must-not-run",))
+
+    async with make_client(config_path=config_file, provider_factory=lambda _: provider) as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "prompt_load_failed"
+    assert provider.messages == []
+
+
+@pytest.mark.anyio
 async def test_yaml_config_builds_separate_sdk_recommendation_agent(
     tmp_path: Path,
 ) -> None:
@@ -365,10 +406,12 @@ llm:
   api_key: local-test-key
   model: example-model
   timeout_seconds: 15
-  system_prompt: YAML 中的系统提示
+  prompt_file: system.md
+  recommendation_policy_prompt_file: recommendation-policy.md
 """,
         encoding="utf-8",
     )
+    write_prompt_files(tmp_path)
     provider = RecordingProvider(("configured",))
     sdk_agent = FakeRecommendationAgent(RecommendationResult("SDK reply", ()))
     received: list[tuple[LLMConfig, object]] = []
@@ -420,10 +463,12 @@ llm:
   api_key: local-test-key
   model: example-model
   timeout_seconds: 15
-  system_prompt: system
+  prompt_file: system.md
+  recommendation_policy_prompt_file: recommendation-policy.md
 """,
         encoding="utf-8",
     )
+    write_prompt_files(tmp_path, "system")
 
     monkeypatch.setenv("MALL_SERVICE_URL", "http://mall.internal:8001")
     application = create_app(

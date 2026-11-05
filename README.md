@@ -82,9 +82,13 @@ MALL_SERVICE_URL=http://localhost:8001 \
     --reload --reload-include '*.yaml' --port 8002
 ```
 
-`--reload` 监视 Python 文件；安装的 `uvicorn[standard]` 还会通过 `--reload-include '*.yaml'` 监视 YAML。修改配置后，Uvicorn 会重启进程并重新读取配置，这属于开发环境热重载，并不是在运行中的进程内动态修改配置。
+提示词保存在 `agent-service/prompts/*.md`，`llm.local.yaml` 通过 `prompt_file` 和 `recommendation_policy_prompt_file` 指向它们。每次请求都会重新读取 Markdown，因此修改提示词后无需重启服务；`--reload` 仍用于 Python 和 YAML 配置变更。
 
-`--reload` watches Python files. With the installed `uvicorn[standard]`, `--reload-include '*.yaml'` also watches YAML files. A config edit restarts the process and reloads the file; this is development-time hot reload, not an in-process configuration mutation.
+Prompt files are reloaded on every request. `--reload` remains available for Python and YAML configuration changes.
+
+提示词文件不会在进程内缓存。文件缺失、为空、不是合法 UTF-8 或超过 1 MiB 时，服务会返回安全的提示词配置错误。
+
+Prompt files are not cached in-process. Missing, empty, invalid UTF-8, or over-1 MiB files return a safe prompt-configuration error.
 
 ### 3. Web 应用 / Web application
 
@@ -147,9 +151,9 @@ curl -N -X POST http://localhost:8002/chat \
   -d '{"messages":[{"role":"user","content":"有哪些商品？"}]}'
 ```
 
-无状态 `/chat` 的成功响应是命名 SSE 事件流：多个 `event: delta`，最后是 `event: done`。请求中的 `messages` 是完整多轮历史；服务会在最前面加入 YAML 中的 `system_prompt`。
+无状态 `/chat` 的成功响应是命名 SSE 事件流：多个 `event: delta`，最后是 `event: done`。请求中的 `messages` 是完整多轮历史；服务会在最前面加入 `prompt_file` 指向的系统提示词。
 
-A successful stateless `/chat` response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the YAML `system_prompt`.
+A successful stateless `/chat` response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the prompt loaded from `prompt_file`.
 
 `POST /chat` 是无状态兼容接口。`/chat` 页面使用新的 conversation API：浏览器只发送本轮内容，Agent 从 SQLite 读取已完成轮次并构造模型上下文。当前为单用户本地模式，所有请求由服务端固定归属 `user_id = 1`；客户端不能指定或覆盖用户 ID。
 

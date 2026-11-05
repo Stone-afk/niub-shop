@@ -19,7 +19,8 @@ class LLMConfig:
     api_key: str = field(repr=False)
     model: str
     timeout_seconds: float
-    system_prompt: str
+    prompt_file: Path
+    recommendation_policy_prompt_file: Path
 
 
 _FIELDS = {
@@ -28,7 +29,8 @@ _FIELDS = {
     "api_key",
     "model",
     "timeout_seconds",
-    "system_prompt",
+    "prompt_file",
+    "recommendation_policy_prompt_file",
 }
 
 
@@ -106,11 +108,17 @@ def load_llm_config(path: str | Path) -> LLMConfig:
     ):
         raise ConfigurationError("llm.timeout_seconds must be a positive number")
 
+    prompt_file = config_path.parent / _required_string(values, "prompt_file")
+    recommendation_policy_prompt_file = config_path.parent / _required_string(
+        values, "recommendation_policy_prompt_file"
+    )
+
     return LLMConfig(
         provider=provider,
         base_url=base_url,
         api_key=_required_string(values, "api_key"),
         model=_required_string(values, "model"),
         timeout_seconds=float(timeout_value),
-        system_prompt=_required_string(values, "system_prompt"),
+        prompt_file=prompt_file,
+        recommendation_policy_prompt_file=recommendation_policy_prompt_file,
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
+from pathlib import Path
 from typing import Protocol
 
 import anyio
@@ -23,6 +24,7 @@ from .recommendation_agent import (
     ToolLoopExceeded,
     UnknownTool,
 )
+from .prompt_loader import load_prompt
 
 
 LOCAL_USER_ID = 1
@@ -123,10 +125,12 @@ class ConversationService:
         repository: ConversationRepository,
         recommendation_agent: RecommendationGenerator,
         system_prompt: str | None,
+        system_prompt_path: str | Path | None = None,
     ) -> None:
         self.repository = repository
         self.recommendation_agent = recommendation_agent
         self.system_prompt = system_prompt
+        self.system_prompt_path = Path(system_prompt_path) if system_prompt_path else None
 
     async def list_conversations(self, user_id: int) -> list[ConversationSummary]:
         return await anyio.to_thread.run_sync(
@@ -175,11 +179,16 @@ class ConversationService:
             conversation_id,
             turn.id,
         )
-        messages: list[ModelMessage] = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
-        messages.extend(stored_messages)
         try:
+            messages: list[ModelMessage] = []
+            system_prompt = (
+                load_prompt(self.system_prompt_path)
+                if self.system_prompt_path is not None
+                else self.system_prompt
+            )
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.extend(stored_messages)
             result = await self.recommendation_agent.generate(messages)
             self._validate_result(result)
         except BaseException as error:

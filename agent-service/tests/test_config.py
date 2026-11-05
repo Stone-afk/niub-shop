@@ -10,6 +10,10 @@ SECRET = "test-secret-never-log"
 
 
 def write_config(tmp_path: Path, body: str) -> Path:
+    (tmp_path / "system.md").write_text("你是商城助手。", encoding="utf-8")
+    (tmp_path / "recommendation-policy.md").write_text(
+        "先搜索商品，再提交推荐。", encoding="utf-8"
+    )
     path = tmp_path / "llm.yaml"
     path.write_text(body, encoding="utf-8")
     return path
@@ -22,7 +26,8 @@ def valid_yaml(**overrides: object) -> str:
         "api_key": SECRET,
         "model": "example-chat",
         "timeout_seconds": 45,
-        "system_prompt": "你是商城助手。",
+        "prompt_file": "system.md",
+        "recommendation_policy_prompt_file": "recommendation-policy.md",
     }
     values.update(overrides)
     lines = ["llm:"]
@@ -42,7 +47,10 @@ def test_loads_complete_config_and_hides_api_key_from_repr(tmp_path: Path) -> No
     assert config.api_key == SECRET
     assert config.model == "example-chat"
     assert config.timeout_seconds == 45.0
-    assert config.system_prompt == "你是商城助手。"
+    assert config.prompt_file == tmp_path / "system.md"
+    assert config.recommendation_policy_prompt_file == (
+        tmp_path / "recommendation-policy.md"
+    )
     assert SECRET not in repr(config)
 
 
@@ -97,12 +105,14 @@ def test_malformed_yaml_traceback_does_not_expose_source_secret(
         ("base_url", "''"),
         ("api_key", "''"),
         ("model", "''"),
-        ("system_prompt", "''"),
+        ("prompt_file", "''"),
+        ("recommendation_policy_prompt_file", "''"),
         ("provider", "123"),
         ("base_url", "[]"),
         ("api_key", "false"),
         ("model", "{}"),
-        ("system_prompt", "9"),
+        ("prompt_file", "9"),
+        ("recommendation_policy_prompt_file", "9"),
     ],
 )
 def test_rejects_empty_or_wrong_type_string_fields(

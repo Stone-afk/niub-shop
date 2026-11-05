@@ -5,6 +5,7 @@ import pytest
 from agent_service.conversation_service import ConversationService
 from agent_service.conversations import ConversationRepository
 from agent_service.providers import ModelProtocolError
+from agent_service.prompt_loader import PromptLoadError
 from agent_service.recommendation_agent import RecommendationInvalid, RecommendationResult
 
 
@@ -60,6 +61,39 @@ async def test_builds_model_context_from_persisted_completed_turns(
     stored = repository.get_conversation(1, conversation.id).turns[-1]
     assert stored.status == "completed"
     assert stored.recommended_product_ids == ("new",)
+
+
+@pytest.mark.anyio
+async def test_system_prompt_path_is_reloaded_for_each_turn(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    conversation = repository.create_conversation(1)
+    prompt_file = tmp_path / "system.md"
+    prompt_file.write_text("系统提示 v1", encoding="utf-8")
+    agent = FakeRecommendationAgent()
+    service = ConversationService(repository, agent, None, prompt_file)
+
+    first = await service.open_turn(1, conversation.id, "第一问")
+    [chunk async for chunk in first]
+    prompt_file.write_text("系统提示 v2", encoding="utf-8")
+    second = await service.open_turn(1, conversation.id, "第二问")
+    [chunk async for chunk in second]
+
+    assert agent.messages[0][0] == {"role": "system", "content": "系统提示 v1"}
+    assert agent.messages[1][0] == {"role": "system", "content": "系统提示 v2"}
+
+
+@pytest.mark.anyio
+async def test_missing_system_prompt_marks_turn_failed(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    conversation = repository.create_conversation(1)
+    agent = FakeRecommendationAgent()
+
+    with pytest.raises(PromptLoadError):
+        await ConversationService(
+            repository, agent, None, tmp_path / "missing.md"
+        ).open_turn(1, conversation.id, "问题")
+
+    assert repository.get_conversation(1, conversation.id).turns[0].status == "failed"
 
 
 @pytest.mark.anyio

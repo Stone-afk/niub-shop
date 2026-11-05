@@ -35,6 +35,7 @@ from .providers import (
 )
 from .mall_client import MallClient, MallServiceUnavailable
 from .product_tools import MallProductSearchTool, ProductSearchTool
+from .prompt_loader import PromptLoadError, load_prompt
 from .recommendation_agent import (
     RecommendationAgent,
     RecommendationInvalid,
@@ -191,6 +192,7 @@ def create_app(
 ) -> FastAPI:
     resolved_provider = provider
     resolved_system_prompt = system_prompt
+    resolved_system_prompt_path: Path | None = None
     resolved_config: LLMConfig | None = None
 
     if resolved_provider is None:
@@ -198,7 +200,7 @@ def create_app(
         if resolved_config_path:
             resolved_config = load_llm_config(resolved_config_path)
             resolved_provider = provider_factory(resolved_config)
-            resolved_system_prompt = resolved_config.system_prompt
+            resolved_system_prompt_path = resolved_config.prompt_file
 
     resolved_recommendation_agent = recommendation_agent
     if resolved_recommendation_agent is None and resolved_config is not None:
@@ -227,6 +229,7 @@ def create_app(
         resolved_repository,
         resolved_recommendation_agent or _UnconfiguredRecommendationAgent(),
         resolved_system_prompt,
+        resolved_system_prompt_path,
     )
 
     @asynccontextmanager
@@ -251,10 +254,20 @@ def create_app(
             )
 
         messages: list[ModelMessage] = []
-        if resolved_system_prompt:
-            messages.append(
-                {"role": "system", "content": resolved_system_prompt}
+        try:
+            chat_system_prompt = (
+                load_prompt(resolved_system_prompt_path)
+                if resolved_system_prompt_path is not None
+                else resolved_system_prompt
             )
+        except PromptLoadError:
+            return _error_response(
+                503,
+                "prompt_load_failed",
+                "Prompt configuration error / 提示词配置错误",
+            )
+        if chat_system_prompt:
+            messages.append({"role": "system", "content": chat_system_prompt})
         messages.extend(
             {"role": message.role, "content": message.content}
             for message in request.messages
@@ -379,6 +392,12 @@ def create_app(
                 502,
                 "mall_service_unavailable",
                 "Mall service is unavailable / 商城服务不可用",
+            )
+        except PromptLoadError:
+            return _error_response(
+                503,
+                "prompt_load_failed",
+                "Prompt configuration error / 提示词配置错误",
             )
         except ToolArgumentsInvalid:
             return _error_response(

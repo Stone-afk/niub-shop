@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from pathlib import Path
 
 import anyio
 import httpx
@@ -100,7 +101,8 @@ def config() -> LLMConfig:
         api_key=SECRET,
         model="example-chat",
         timeout_seconds=12.0,
-        system_prompt="Be helpful.",
+        prompt_file=Path("system.md"),
+        recommendation_policy_prompt_file=Path("recommendation-policy.md"),
     )
 
 
