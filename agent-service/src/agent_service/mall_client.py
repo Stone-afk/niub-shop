@@ -51,6 +51,7 @@ class MallClient:
             with httpx.Client(
                 transport=self._transport,
                 timeout=self._timeout,
+                trust_env=False,
             ) as client:
                 response = client.get(f"{self._base_url}/products")
                 response.raise_for_status()
