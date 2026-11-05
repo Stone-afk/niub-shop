@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -54,6 +54,24 @@ describe("storefront", () => {
     ).toBeVisible();
   });
 
+  it("retries a failed product request without losing the chat draft", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(productResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<Home />);
+    await screen.findByText("商品加载失败 / Failed to load products");
+    const input = screen.getByLabelText("消息 / Message");
+    await user.type(input, "保留这段草稿");
+
+    await user.click(screen.getByRole("button", { name: "重试 / Retry" }));
+
+    expect(await screen.findByText(PRODUCT.name)).toBeVisible();
+    expect(input).toHaveValue("保留这段草稿");
+  });
+
   it("disables chat submission for whitespace-only input", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(productResponse()));
     const user = userEvent.setup();
@@ -105,5 +123,29 @@ describe("storefront", () => {
       await screen.findByText("聊天请求失败 / Chat request failed"),
     ).toBeVisible();
     expect(input).toHaveValue("请再试一次");
+  });
+
+  it("does not clear newer input when an earlier chat request completes", async () => {
+    let resolveChat: (response: Response) => void = () => undefined;
+    const chatResponse = new Promise<Response>((resolve) => {
+      resolveChat = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(productResponse())
+      .mockReturnValueOnce(chatResponse);
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<Home />);
+    await screen.findByText(PRODUCT.name);
+    const input = screen.getByLabelText("消息 / Message");
+
+    await user.type(input, "第一条");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+    await user.type(input, " 新草稿");
+    await act(async () => resolveChat(Response.json({ reply: "收到" })));
+
+    expect(await screen.findByText("收到")).toBeVisible();
+    expect(input).toHaveValue("第一条 新草稿");
   });
 });

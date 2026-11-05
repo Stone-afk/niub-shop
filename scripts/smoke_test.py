@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import http.client
 import os
+import shutil
 import socket
 import subprocess
 import time
@@ -16,6 +17,15 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
+
+
+def _node_executable() -> str:
+    executable = os.getenv("NODE_EXECUTABLE") or shutil.which("node")
+    if executable is None:
+        raise RuntimeError(
+            "Node.js executable not found; add node to PATH or set NODE_EXECUTABLE"
+        )
+    return executable
 
 
 def _free_port() -> int:
@@ -131,7 +141,7 @@ def run_smoke_test() -> None:
         processes.append(
             subprocess.Popen(
                 [
-                    "/Users/stone/.nvm/versions/node/v22.22.2/bin/node",
+                    _node_executable(),
                     str(ROOT / "web/node_modules/next/dist/bin/next"),
                     "start",
                     "--hostname",

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import type { ChatReply, Product, ProductList } from "@/lib/types";
 import styles from "./page.module.css";
@@ -25,32 +25,27 @@ export default function Home() {
   const [chatError, setChatError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-
-    async function loadProducts() {
-      try {
-        const response = await fetch("/api/products");
-        if (!response.ok) throw new Error("product request failed");
-        const payload = (await response.json()) as ProductList;
-        if (!Array.isArray(payload.items)) throw new Error("invalid product response");
-        if (active) {
-          setProducts(payload.items);
-          setProductState("ready");
-        }
-      } catch {
-        if (active) setProductState("error");
-      }
+  const loadProducts = useCallback(async () => {
+    setProductState("loading");
+    try {
+      const response = await fetch("/api/products");
+      if (!response.ok) throw new Error("product request failed");
+      const payload = (await response.json()) as ProductList;
+      if (!Array.isArray(payload.items)) throw new Error("invalid product response");
+      setProducts(payload.items);
+      setProductState("ready");
+    } catch {
+      setProductState("error");
     }
-
-    void loadProducts();
-    return () => {
-      active = false;
-    };
   }, []);
+
+  useEffect(() => {
+    void loadProducts();
+  }, [loadProducts]);
 
   async function submitChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const submittedDraft = message;
     const trimmedMessage = message.trim();
     if (!trimmedMessage || submitting) return;
 
@@ -66,7 +61,7 @@ export default function Home() {
       const payload = (await response.json()) as ChatReply;
       if (typeof payload.reply !== "string") throw new Error("invalid chat response");
       setReply(payload.reply);
-      setMessage("");
+      setMessage((current) => (current === submittedDraft ? "" : current));
     } catch {
       setChatError(true);
     } finally {
@@ -96,9 +91,12 @@ export default function Home() {
             </p>
           )}
           {productState === "error" && (
-            <p className={`${styles.status} ${styles.error}`} role="alert">
-              商品加载失败 / Failed to load products
-            </p>
+            <div className={`${styles.status} ${styles.error}`} role="alert">
+              <span>商品加载失败 / Failed to load products</span>
+              <button className={styles.retry} onClick={() => void loadProducts()}>
+                重试 / Retry
+              </button>
+            </div>
           )}
           {productState === "ready" && products.length === 0 && (
             <p className={styles.status}>暂无商品 / No products available</p>
