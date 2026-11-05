@@ -2,7 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
-import type { ChatReply, Product, ProductList } from "@/lib/types";
+import { streamChat } from "@/lib/chat";
+import type { ChatMessage, Product, ProductList } from "@/lib/types";
 import styles from "./page.module.css";
 
 
@@ -51,16 +52,14 @@ export default function Home() {
 
     setSubmitting(true);
     setChatError(false);
+    setReply("");
     try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: trimmedMessage }),
+      const messages: ChatMessage[] = [
+        { role: "user", content: trimmedMessage },
+      ];
+      await streamChat(messages, (content) => {
+        setReply((current) => `${current ?? ""}${content}`);
       });
-      if (!response.ok) throw new Error("chat request failed");
-      const payload = (await response.json()) as ChatReply;
-      if (typeof payload.reply !== "string") throw new Error("invalid chat response");
-      setReply(payload.reply);
       setMessage((current) => (current === submittedDraft ? "" : current));
     } catch {
       setChatError(true);
@@ -119,6 +118,9 @@ export default function Home() {
           <p className={styles.chatIntro}>
             询问当前商品信息。Ask about the current catalog.
           </p>
+          <a className={styles.chatLink} href="/chat">
+            打开完整对话 / Open full chat
+          </a>
           <form className={styles.form} onSubmit={submitChat}>
             <label htmlFor="chat-message">消息 / Message</label>
             <input

@@ -10,6 +10,9 @@ export interface ProductList {
   items: Product[];
 }
 
-export interface ChatReply {
-  reply: string;
+export type ChatRole = "user" | "assistant";
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
 }

@@ -128,8 +128,16 @@
 }
 
 .chatIntro {
-  margin: 0 0 24px;
+  margin: 0 0 10px;
   color: #bbc7c0;
+}
+
+.chatLink {
+  display: inline-block;
+  margin-bottom: 24px;
+  color: #f2b27f;
+  font-weight: 800;
+  text-underline-offset: 4px;
 }
 
 .form {

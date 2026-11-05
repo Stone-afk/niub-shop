@@ -22,6 +22,45 @@ function productResponse(items = [PRODUCT]): Response {
 }
 
 
+function chatResponse(deltas: string[]): Response {
+  const events = deltas
+    .map(
+      (content) =>
+        `event: delta\ndata: ${JSON.stringify({ content })}\n\n`,
+    )
+    .join("");
+  return new Response(`${events}event: done\ndata: {}\n\n`, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+
+function controlledChatResponse() {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(streamController) {
+        controller = streamController;
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  return {
+    response,
+    delta(content: string) {
+      controller.enqueue(
+        encoder.encode(`event: delta\ndata: ${JSON.stringify({ content })}\n\n`),
+      );
+    },
+    done() {
+      controller.enqueue(encoder.encode("event: done\ndata: {}\n\n"));
+      controller.close();
+    },
+  };
+}
+
+
 describe("storefront", () => {
   it("shows bilingual headings, loading state, and products", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(productResponse()));
@@ -83,11 +122,12 @@ describe("storefront", () => {
     expect(screen.getByRole("button", { name: "发送 / Send" })).toBeDisabled();
   });
 
-  it("shows the latest successful chat reply", async () => {
+  it("grows the latest chat reply as SSE deltas arrive", async () => {
+    const chat = controlledChatResponse();
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(productResponse())
-      .mockResolvedValueOnce(Response.json({ reply: "这里有两个商品。" }));
+      .mockResolvedValueOnce(chat.response);
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<Home />);
@@ -96,11 +136,27 @@ describe("storefront", () => {
     await user.type(screen.getByLabelText("消息 / Message"), "推荐商品");
     await user.click(screen.getByRole("button", { name: "发送 / Send" }));
 
+    await act(async () => chat.delta("这里有"));
+    expect(await screen.findByText("这里有")).toBeVisible();
+    await act(async () => {
+      chat.delta("两个商品。");
+      chat.done();
+    });
     expect(await screen.findByText("这里有两个商品。")).toBeVisible();
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      "/api/chat",
-      expect.objectContaining({ method: "POST" }),
-    );
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)?.[1]?.body as string)).toEqual({
+      messages: [{ role: "user", content: "推荐商品" }],
+    });
+  });
+
+  it("links to the full multi-turn chat page", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(productResponse()));
+
+    render(<Home />);
+
+    await screen.findByText(PRODUCT.name);
+    expect(
+      screen.getByRole("link", { name: "打开完整对话 / Open full chat" }),
+    ).toHaveAttribute("href", "/chat");
   });
 
   it("retains the message when chat fails", async () => {
@@ -127,13 +183,13 @@ describe("storefront", () => {
 
   it("does not clear newer input when an earlier chat request completes", async () => {
     let resolveChat: (response: Response) => void = () => undefined;
-    const chatResponse = new Promise<Response>((resolve) => {
+    const pendingChatResponse = new Promise<Response>((resolve) => {
       resolveChat = resolve;
     });
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(productResponse())
-      .mockReturnValueOnce(chatResponse);
+      .mockReturnValueOnce(pendingChatResponse);
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<Home />);
@@ -143,7 +199,7 @@ describe("storefront", () => {
     await user.type(input, "第一条");
     await user.click(screen.getByRole("button", { name: "发送 / Send" }));
     await user.type(input, " 新草稿");
-    await act(async () => resolveChat(Response.json({ reply: "收到" })));
+    await act(async () => resolveChat(chatResponse(["收到"])));
 
     expect(await screen.findByText("收到")).toBeVisible();
     expect(input).toHaveValue("第一条 新草稿");
