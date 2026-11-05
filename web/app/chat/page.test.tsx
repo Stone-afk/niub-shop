@@ -52,6 +52,11 @@ describe("multi-turn chat page", () => {
     expect(
       screen.getByRole("heading", { name: "Agent 对话 / Agent Chat" }),
     ).toBeVisible();
+    expect(
+      screen.getByText(
+        "根据你的输入模拟流式回复 / Streams a simulated reply from your input",
+      ),
+    ).toBeVisible();
     expect(screen.getByText("开始一段对话 / Start a conversation")).toBeVisible();
     expect(
       screen.getByRole("link", { name: "返回商城 / Back to store" }),

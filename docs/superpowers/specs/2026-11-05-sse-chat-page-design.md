@@ -2,9 +2,9 @@
 
 ## 目标 / Intent
 
-在 `web` 新增 `/chat` 页面，提供基础的 Agent 多轮对话体验。当前阶段不调用大模型；`agent-service` 通过 SSE 分块返回固定双语回复，用于验证完整流式链路和页面交互。
+在 `web` 新增 `/chat` 页面，提供基础的 Agent 多轮对话体验。当前阶段不调用大模型；`agent-service` 根据本轮最后一条用户输入，通过 SSE 分块返回模拟回复和请求时间戳，用于验证完整流式链路和页面交互。
 
-Add a `/chat` page to `web` with a basic multi-turn Agent experience. No model is called yet; `agent-service` streams a fixed bilingual reply over SSE so the full streaming path and UI behavior can be verified.
+Add a `/chat` page to `web` with a basic multi-turn Agent experience. No model is called yet; `agent-service` echoes the latest user input and request timestamp over SSE so the full streaming path and UI behavior can be verified.
 
 ## 范围 / Scope
 
@@ -31,20 +31,20 @@ agent-service POST /chat
 ```
 
 - 现有 `/api/chat` 和 `agent-service /chat` 整体由 JSON 回复改为 `text/event-stream`，不提供旧格式兼容。
-- 请求升级为 `{ "messages": [{ "role": "user" | "assistant", "content": string }] }`，每次发送当前完整会话历史。后端当前会校验并接收历史，但固定回复暂不根据上下文生成；未来接入大模型时无需再次修改协议。
-- SSE 数据使用具名 `delta` 与 `done` 事件。固定回复拆成多个文本片段发送，便于真实呈现流式更新。
+- 请求升级为 `{ "messages": [{ "role": "user" | "assistant", "content": string }] }`，每次发送当前完整会话历史。后端校验历史，并使用最后一条 `user` 消息生成当前模拟回复；未来接入大模型时无需再次修改协议。
+- SSE 数据使用具名 `delta` 与 `done` 事件。模拟回复按语义拆为四个 `delta`：`你输入的是 `、用户输入、`\n当前时间戳：`、请求开始时生成的 Unix 毫秒时间戳；分块之间保留演示间隔，最后发送 `done`。
 - Next.js 代理透传上游状态、`content-type` 和响应流；上游不可用时仍返回明确的 HTTP 错误响应。
 
 ## 页面结构 / Page Structure
 
-- 顶部：返回商城的导航、页面标题和当前“固定回复演示”说明。
+- 顶部：返回商城的导航、页面标题和当前“模拟回复演示”说明。
 - 中部：可滚动消息区，含欢迎态、用户气泡、Agent 气泡和生成中状态。
 - 底部：固定输入区，支持表单提交；采用中英双语文案并保持键盘与屏幕阅读器可用。
 - 视觉延续商城现有的暖色、卡片式设计，同时让 `/chat` 成为独立、专注的对话工作区。
 
 ## 测试 / Testing
 
-- Python：验证 Agent 接口返回 SSE、事件顺序与固定内容，并保留请求校验测试。
+- Python：使用可控时钟验证 Agent 接口回显最后一条用户输入、返回 Unix 毫秒时间戳、保持 SSE 事件顺序和演示间隔，并保留请求校验测试。
 - Next.js API：验证请求体转发、流式响应透传和服务不可用错误。
 - 页面：验证初始状态、连续多轮消息、分块追加、发送期间禁用以及错误状态。
 - 首页：更新原 JSON 聊天测试以覆盖 SSE 消费。

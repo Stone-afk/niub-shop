@@ -88,8 +88,13 @@ export default function ChatPage() {
             <div>
               <h1>Agent 对话 / Agent Chat</h1>
               <p>
-                完整对话历史会随每次请求发送，当前回复内容固定。
-                Full history is sent with every request; replies are fixed for now.
+                <span>
+                  根据你的输入模拟流式回复 / Streams a simulated reply from your input
+                </span>
+                <br />
+                <span>
+                  完整对话历史会随每次请求发送。Full history is sent with every request.
+                </span>
               </p>
             </div>
             <span className={styles.badge}>SSE · Demo</span>

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from time import perf_counter
 
 import httpx
@@ -33,8 +34,18 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-async def make_client(mall_client: RecordingMallClient) -> httpx.AsyncClient:
-    app = create_app(mall_client=mall_client, provider=EchoProvider())
+async def make_client(
+    mall_client: RecordingMallClient,
+    clock: Callable[[], int] | None = None,
+) -> httpx.AsyncClient:
+    if clock is None:
+        app = create_app(mall_client=mall_client, provider=EchoProvider())
+    else:
+        app = create_app(
+            mall_client=mall_client,
+            provider=EchoProvider(),
+            clock=clock,
+        )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
@@ -51,29 +62,37 @@ async def test_health_returns_ok() -> None:
 
 
 @pytest.mark.anyio
-async def test_chat_streams_fixed_reply_as_delta_and_done_events() -> None:
+async def test_chat_streams_input_and_timestamp_as_delta_and_done_events() -> None:
     mall_client = RecordingMallClient()
-    async with await make_client(mall_client) as client:
+    clock_calls = 0
+
+    def clock() -> int:
+        nonlocal clock_calls
+        clock_calls += 1
+        return 1730876543210
+
+    async with await make_client(mall_client, clock) as client:
         response = await client.post(
             "/chat",
-            json={"messages": [{"role": "user", "content": "推荐商品"}]},
+            json={"messages": [{"role": "user", "content": "  牛布袋👜  "}]},
         )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.text == (
-        'event: delta\ndata: {"content": "你好！我是牛布商城智能助手。"}\n\n'
-        'event: delta\ndata: {"content": " / Hi! I’m the Niub Shop assistant."}\n\n'
-        'event: delta\ndata: {"content": "\\n这是一个固定的 SSE 流式回复演示。"}\n\n'
-        'event: delta\ndata: {"content": " / This is a fixed SSE streaming demo."}\n\n'
+        'event: delta\ndata: {"content": "你输入的是 "}\n\n'
+        'event: delta\ndata: {"content": "牛布袋👜"}\n\n'
+        'event: delta\ndata: {"content": "\\n当前时间戳："}\n\n'
+        'event: delta\ndata: {"content": "1730876543210"}\n\n'
         "event: done\ndata: {}\n\n"
     )
+    assert clock_calls == 1
     assert mall_client.calls == 0
 
 
 @pytest.mark.anyio
 async def test_chat_accepts_complete_history() -> None:
-    async with await make_client(RecordingMallClient()) as client:
+    async with await make_client(RecordingMallClient(), lambda: 1730876543210) as client:
         response = await client.post(
             "/chat",
             json={
@@ -81,12 +100,26 @@ async def test_chat_accepts_complete_history() -> None:
                     {"role": "user", "content": "第一轮"},
                     {"role": "assistant", "content": "固定回复"},
                     {"role": "user", "content": "第二轮"},
+                    {"role": "assistant", "content": "不要回显这一条"},
                 ]
             },
         )
 
     assert response.status_code == 200
+    assert 'data: {"content": "第二轮"}' in response.text
+    assert "不要回显这一条" not in response.text
     assert response.text.endswith("event: done\ndata: {}\n\n")
+
+
+@pytest.mark.anyio
+async def test_chat_rejects_history_without_user_message() -> None:
+    async with await make_client(RecordingMallClient()) as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "assistant", "content": "only reply"}]},
+        )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.anyio
