@@ -154,14 +154,21 @@ async def test_searches_are_serialized_and_stop_after_products_are_found() -> No
             [
                 function_call("search_products", {}, call_id="s1"),
                 function_call("search_products", {}, call_id="s2"),
-            ]
+            ],
+            [
+                function_call(
+                    "submit_product_recommendation",
+                    {"answer": "推荐这件商品", "product_ids": ["one"]},
+                    call_id="done",
+                )
+            ],
         ]
     )
     tool = RecordingProductTool([(item("one"),), (item("two"),)], delay=0.01)
 
-    with pytest.raises(RecommendationInvalid):
-        await RecommendationAgent(model, tool).generate([])
+    result = await RecommendationAgent(model, tool).generate([])
 
+    assert result == RecommendationResult("推荐这件商品", ("one",))
     assert len(tool.filters) == 1
 
 
