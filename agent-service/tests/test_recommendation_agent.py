@@ -253,6 +253,37 @@ async def test_empty_search_can_submit_explanation_with_no_ids() -> None:
     assert result == RecommendationResult("没有合适商品", ())
 
 
+@pytest.mark.anyio
+async def test_nonempty_search_forces_submit_after_empty_query_refinement() -> None:
+    provider = RecordingProvider(
+        [
+            ModelResponse("", (call("s1", "search_products", {"keyword": "商品"}),)),
+            ModelResponse("", (call("s2", "search_products", {}),)),
+            ModelResponse(
+                "",
+                (
+                    call(
+                        "done",
+                        "submit_product_recommendation",
+                        {"answer": "推荐这件商品", "product_ids": ["one"]},
+                    ),
+                ),
+            ),
+        ]
+    )
+    tool = RecordingProductTool([(), (item("one"),)])
+
+    result = await RecommendationAgent(provider, tool).generate([])
+
+    assert result == RecommendationResult("推荐这件商品", ("one",))
+    assert [request["tool_choice"] for request in provider.requests] == [
+        "auto",
+        "auto",
+        "auto",
+    ]
+    assert provider.requests[2]["tools"] == [SUBMIT_RECOMMENDATION_TOOL]
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
