@@ -1,6 +1,7 @@
 import httpx
 import anyio
 import pytest
+from pathlib import Path
 from agents.testing import ScriptedModel, assistant_message, function_call
 from openai import APIConnectionError
 from pydantic import ValidationError
@@ -9,7 +10,7 @@ from agent_service.config import LLMConfig
 from agent_service.mall_client import MallServiceUnavailable, ProductData
 from agent_service.providers import ModelProtocolError, ModelUpstreamError
 from agent_service.recommendation_agent import (
-    RECOMMENDATION_POLICY_PROMPT,
+    DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH,
     RecommendationAgent,
     RecommendationInvalid,
     RecommendationResult,
@@ -17,6 +18,7 @@ from agent_service.recommendation_agent import (
     ToolLoopExceeded,
     create_recommendation_agent,
 )
+from agent_service.prompt_loader import load_prompt
 
 
 def item(product_id: str, name: str = "Product") -> ProductData:
@@ -60,10 +62,33 @@ async def test_sdk_runner_returns_plain_text_without_searching() -> None:
     assert result == RecommendationResult(answer="你好", product_ids=())
     assert tool.filters == []
     assert model.first_call is not None
-    assert model.first_call.system_instructions == RECOMMENDATION_POLICY_PROMPT
+    assert model.first_call.system_instructions == load_prompt(
+        DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH
+    )
     assert [registered.name for registered in model.first_call.tools] == [
         "search_products"
     ]
+
+
+@pytest.mark.anyio
+async def test_recommendation_policy_is_reloaded_for_each_generation(
+    tmp_path: Path,
+) -> None:
+    prompt_file = tmp_path / "recommendation-policy.md"
+    prompt_file.write_text("policy-v1", encoding="utf-8")
+    model = ScriptedModel([[assistant_message("你好")], [assistant_message("再见")]])
+    agent = RecommendationAgent(
+        model,
+        RecordingProductTool(),
+        recommendation_policy_prompt_path=prompt_file,
+    )
+
+    await agent.generate([])
+    prompt_file.write_text("policy-v2", encoding="utf-8")
+    await agent.generate([])
+
+    assert model.calls[0].system_instructions == "policy-v1"
+    assert model.calls[1].system_instructions == "policy-v2"
 
 
 @pytest.mark.anyio
@@ -307,7 +332,8 @@ def test_factory_uses_configured_chat_completions_model_and_disables_tracing() -
         api_key="local-test-key",
         model="deepseek-flash",
         timeout_seconds=15,
-        system_prompt="system",
+        prompt_file=Path("system.md"),
+        recommendation_policy_prompt_file=Path("recommendation-policy.md"),
     )
     captured: dict[str, object] = {}
 
