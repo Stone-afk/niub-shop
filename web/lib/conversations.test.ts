@@ -26,7 +26,19 @@ const summary = {
 
 describe("conversation JSON client", () => {
   it("lists, creates, and loads an encoded conversation id", async () => {
-    const detail = { ...summary, turns: [] };
+    const detail = {
+      ...summary,
+      turns: [{
+        id: "t1",
+        user_content: "问题",
+        assistant_content: "回答",
+        status: "completed" as const,
+        error_code: null,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+        recommended_product_ids: ["mug"],
+      }],
+    };
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(Response.json([summary]))
@@ -61,15 +73,23 @@ describe("conversation streaming client", () => {
       sseResponse(
         'event: delta\ndata: {"content":"你好"}\n\n' +
           'event: delta\ndata: {"content":"！"}\n\n' +
+          'event: recommendations\ndata: {"product_ids":["mug"]}\n\n' +
           "event: done\ndata: {}\n\n",
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
     const deltas: string[] = [];
+    const ids: string[][] = [];
 
-    await streamConversationTurn("c/1", "问题", (chunk) => deltas.push(chunk));
+    await streamConversationTurn(
+      "c/1",
+      "问题",
+      (chunk) => deltas.push(chunk),
+      (products) => ids.push(products),
+    );
 
     expect(deltas).toEqual(["你好", "！"]);
+    expect(ids).toEqual([["mug"]]);
     expect(fetchMock).toHaveBeenCalledWith("/api/conversations/c%2F1/turns", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -80,7 +100,10 @@ describe("conversation streaming client", () => {
   it("retries a turn without resending user content", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValue(sseResponse("event: done\ndata: {}\n\n"));
+      .mockResolvedValue(sseResponse(
+        'event: recommendations\ndata: {"product_ids":[]}\n\n' +
+        "event: done\ndata: {}\n\n",
+      ));
     vi.stubGlobal("fetch", fetchMock);
 
     await retryConversationTurn("c/1", "t?1", () => undefined);

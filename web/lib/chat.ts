@@ -16,19 +16,59 @@ function readField(line: string, field: string): string | null {
 }
 
 
-function handleFrame(frame: string, onDelta: (content: string) => void): boolean {
+export interface ConsumeChatStreamOptions {
+  onRecommendations?: (ids: string[]) => void;
+  requireRecommendations?: boolean;
+  requestError?: string;
+}
+
+
+type StreamState = { seenRecommendations: boolean };
+
+
+function handleFrame(
+  frame: string,
+  onDelta: (content: string) => void,
+  options: ConsumeChatStreamOptions,
+  state: StreamState,
+): boolean {
   const lines = frame.split("\n");
   const event = lines
     .map((line) => readField(line, "event"))
     .find((value) => value !== null);
-  if (event === "done") return true;
+  if (event === "done") {
+    if (options.requireRecommendations && !state.seenRecommendations) {
+      throw new Error("Invalid chat stream");
+    }
+    return true;
+  }
   if (event === "error") throw new Error("Model stream failed");
-  if (event !== "delta") throw new Error("Invalid chat stream");
 
   const data = lines
     .map((line) => readField(line, "data"))
     .filter((value): value is string => value !== null)
     .join("\n");
+  if (event === "recommendations") {
+    if (state.seenRecommendations) throw new Error("Invalid chat stream");
+    try {
+      const payload = JSON.parse(data) as { product_ids?: unknown };
+      if (
+        !Array.isArray(payload.product_ids) ||
+        payload.product_ids.some((id) => typeof id !== "string" || !id) ||
+        new Set(payload.product_ids).size !== payload.product_ids.length
+      ) {
+        throw new Error("invalid products");
+      }
+      state.seenRecommendations = true;
+      options.onRecommendations?.([...payload.product_ids]);
+      return false;
+    } catch {
+      throw new Error("Invalid chat stream");
+    }
+  }
+  if (event !== "delta" || state.seenRecommendations) {
+    throw new Error("Invalid chat stream");
+  }
   try {
     const payload = JSON.parse(data) as { content?: unknown };
     if (typeof payload.content !== "string") throw new Error("missing content");
@@ -43,14 +83,19 @@ function handleFrame(frame: string, onDelta: (content: string) => void): boolean
 export async function consumeChatStream(
   response: Response,
   onDelta: (content: string) => void,
-  requestError = "Chat request failed",
+  optionsOrRequestError: ConsumeChatStreamOptions | string = {},
 ): Promise<void> {
+  const options = typeof optionsOrRequestError === "string"
+    ? { requestError: optionsOrRequestError }
+    : optionsOrRequestError;
+  const requestError = options.requestError ?? "Chat request failed";
   if (!response.ok) throw new Error(requestError);
   if (!response.body) throw new Error("Chat stream unavailable");
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const state: StreamState = { seenRecommendations: false };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -66,7 +111,7 @@ export async function consumeChatStream(
     while (boundary >= 0) {
       const frame = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
-      if (handleFrame(frame, onDelta)) {
+      if (handleFrame(frame, onDelta, options, state)) {
         await reader.cancel();
         return;
       }

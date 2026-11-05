@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { streamChat } from "./chat";
+import { consumeChatStream, streamChat } from "./chat";
 
 
 const HISTORY = [
@@ -130,5 +130,77 @@ describe("streamChat", () => {
     await expect(streamChat(HISTORY, () => undefined)).rejects.toThrow(
       "Chat stream ended unexpectedly",
     );
+  });
+});
+
+describe("consumeChatStream recommendations", () => {
+  it("emits ordered product ids after split UTF-8 deltas", async () => {
+    const deltas: string[] = [];
+    const recommendations: string[][] = [];
+    await consumeChatStream(
+      sseResponse([
+        'event: delta\ndata: {"content":"推荐"}\n\n',
+        'event: recommendations\ndata: {"product_ids":["mug","tote"]}\n\n',
+        'event: done\ndata: {}\n\n',
+      ]),
+      (value) => deltas.push(value),
+      {
+        requireRecommendations: true,
+        onRecommendations: (ids) => recommendations.push(ids),
+      },
+    );
+
+    expect(deltas).toEqual(["推荐"]);
+    expect(recommendations).toEqual([["mug", "tote"]]);
+  });
+
+  it("accepts an empty recommendation list", async () => {
+    const recommendations: string[][] = [];
+    await consumeChatStream(
+      sseResponse([
+        'event: recommendations\ndata: {"product_ids":[]}\n\n',
+        'event: done\ndata: {}\n\n',
+      ]),
+      () => undefined,
+      { requireRecommendations: true, onRecommendations: (ids) => recommendations.push(ids) },
+    );
+    expect(recommendations).toEqual([[]]);
+  });
+
+  it.each([
+    ["missing metadata", 'event: done\ndata: {}\n\n'],
+    [
+      "duplicate metadata",
+      'event: recommendations\ndata: {"product_ids":[]}\n\n' +
+        'event: recommendations\ndata: {"product_ids":[]}\n\n' +
+        'event: done\ndata: {}\n\n',
+    ],
+    [
+      "delta after metadata",
+      'event: recommendations\ndata: {"product_ids":[]}\n\n' +
+        'event: delta\ndata: {"content":"late"}\n\n' +
+        'event: done\ndata: {}\n\n',
+    ],
+    [
+      "duplicate ids",
+      'event: recommendations\ndata: {"product_ids":["mug","mug"]}\n\n' +
+        'event: done\ndata: {}\n\n',
+    ],
+    [
+      "non-string id",
+      'event: recommendations\ndata: {"product_ids":[1]}\n\n' +
+        'event: done\ndata: {}\n\n',
+    ],
+    [
+      "blank id",
+      'event: recommendations\ndata: {"product_ids":[""]}\n\n' +
+        'event: done\ndata: {}\n\n',
+    ],
+  ])("rejects %s", async (_name, body) => {
+    await expect(
+      consumeChatStream(sseResponse([body]), () => undefined, {
+        requireRecommendations: true,
+      }),
+    ).rejects.toThrow("Invalid chat stream");
   });
 });

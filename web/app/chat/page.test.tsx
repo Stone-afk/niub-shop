@@ -11,8 +11,33 @@ const api = vi.hoisted(() => ({
   streamConversationTurn: vi.fn(),
   retryConversationTurn: vi.fn(),
 }));
+const productApi = vi.hoisted(() => ({ listProducts: vi.fn() }));
 
 vi.mock("@/lib/conversations", () => api);
+vi.mock("@/lib/products", () => productApi);
+
+const products = [
+  {
+    id: "mug",
+    name: "陶瓷杯 / Ceramic Mug",
+    description: "适合咖啡 / For coffee",
+    price_cents: 39000,
+    currency: "TWD",
+    category: "drinkware",
+    tags: ["coffee"],
+    availability: "in_stock" as const,
+  },
+  {
+    id: "tote",
+    name: "帆布袋 / Canvas Tote",
+    description: "耐用托特包 / Durable tote",
+    price_cents: 59000,
+    currency: "TWD",
+    category: "bags",
+    tags: ["durable"],
+    availability: "out_of_stock" as const,
+  },
+];
 
 const recent = {
   id: "recent",
@@ -40,6 +65,7 @@ const details = {
         error_code: null,
         created_at: recent.created_at,
         updated_at: recent.updated_at,
+        recommended_product_ids: ["mug", "tote"],
       },
       {
         id: "failed",
@@ -49,6 +75,7 @@ const details = {
         error_code: "model_stream_failed",
         created_at: recent.created_at,
         updated_at: recent.updated_at,
+        recommended_product_ids: [],
       },
     ],
   },
@@ -63,6 +90,7 @@ beforeEach(() => {
   );
   api.streamConversationTurn.mockResolvedValue(undefined);
   api.retryConversationTurn.mockResolvedValue(undefined);
+  productApi.listProducts.mockResolvedValue(products);
 });
 
 describe("persisted conversation page", () => {
@@ -76,6 +104,14 @@ describe("persisted conversation page", () => {
     expect(screen.getByRole("button", { name: /最近对话/ })).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("navigation", { name: "历史对话 / Conversation history" })).toBeVisible();
     expect(screen.getByRole("link", { name: "返回商城 / Back to store" })).toHaveAttribute("href", "/");
+    const cards = await screen.findByRole("list", { name: "推荐商品 / Recommended products" });
+    expect(cards).toHaveTextContent("陶瓷杯 / Ceramic Mug");
+    expect(cards).toHaveTextContent("帆布袋 / Canvas Tote");
+    expect(cards).toHaveTextContent(/TWD\s*390\.00/);
+    expect(cards).toHaveTextContent("有货 / In stock");
+    expect(cards).toHaveTextContent("暂时缺货 / Out of stock");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(cards.querySelector("a, button")).toBeNull();
   });
 
   it("selects and loads an older conversation", async () => {
@@ -108,7 +144,7 @@ describe("persisted conversation page", () => {
     await user.click(screen.getByRole("button", { name: "发送 / Send" }));
 
     await waitFor(() => expect(api.createConversation).toHaveBeenCalledTimes(1));
-    expect(api.streamConversationTurn).toHaveBeenCalledWith("created", "第一问", expect.any(Function));
+    expect(api.streamConversationTurn).toHaveBeenCalledWith("created", "第一问", expect.any(Function), expect.any(Function));
     await waitFor(() => expect(api.listConversations).toHaveBeenCalledTimes(2));
   });
 
@@ -120,7 +156,7 @@ describe("persisted conversation page", () => {
     await user.type(screen.getByLabelText("消息 / Message"), "继续问");
     await user.click(screen.getByRole("button", { name: "发送 / Send" }));
 
-    await waitFor(() => expect(api.streamConversationTurn).toHaveBeenCalledWith("recent", "继续问", expect.any(Function)));
+    await waitFor(() => expect(api.streamConversationTurn).toHaveBeenCalledWith("recent", "继续问", expect.any(Function), expect.any(Function)));
     expect(api.createConversation).not.toHaveBeenCalled();
   });
 
@@ -131,7 +167,7 @@ describe("persisted conversation page", () => {
 
     await user.click(screen.getByRole("button", { name: "重试 / Retry" }));
 
-    await waitFor(() => expect(api.retryConversationTurn).toHaveBeenCalledWith("recent", "failed", expect.any(Function)));
+    await waitFor(() => expect(api.retryConversationTurn).toHaveBeenCalledWith("recent", "failed", expect.any(Function), expect.any(Function)));
     await waitFor(() => expect(api.getConversation).toHaveBeenCalledTimes(2));
   });
 
@@ -154,6 +190,50 @@ describe("persisted conversation page", () => {
     await user.click(screen.getByRole("button", { name: /最近对话/ }));
     expect(screen.getByText("属于最近会话")).toBeVisible();
     await act(async () => finish());
+  });
+
+  it("keeps live recommendation cards attached to their original conversation", async () => {
+    let sendProducts!: (ids: string[]) => void;
+    let finish!: () => void;
+    api.streamConversationTurn.mockImplementation(
+      (_id: string, _content: string, _onDelta: (value: string) => void, onProducts: (ids: string[]) => void) => {
+        sendProducts = onProducts;
+        return new Promise<void>((resolve) => { finish = resolve; });
+      },
+    );
+    const user = userEvent.setup();
+    render(<ChatPage />);
+    await screen.findByText("推荐咖啡杯");
+    await user.type(screen.getByLabelText("消息 / Message"), "流式推荐");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+
+    await act(async () => sendProducts(["mug"]));
+    expect(screen.getAllByText("陶瓷杯 / Ceramic Mug").length).toBeGreaterThan(1);
+    await user.click(screen.getByRole("button", { name: /较早对话/ }));
+    expect(screen.queryByText("陶瓷杯 / Ceramic Mug")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /最近对话/ }));
+    expect(screen.getAllByText("陶瓷杯 / Ceramic Mug").length).toBeGreaterThan(1);
+    await act(async () => finish());
+  });
+
+  it("shows a bilingual placeholder for a catalog-missing historical id", async () => {
+    api.getConversation.mockResolvedValueOnce({
+      ...details.recent,
+      turns: [{ ...details.recent.turns[0], recommended_product_ids: ["removed-id"] }],
+    });
+    render(<ChatPage />);
+
+    expect(await screen.findByText("商品暂不可用 / Product unavailable")).toBeVisible();
+    expect(screen.getByText("removed-id")).toBeVisible();
+    expect(screen.getByText("推荐咖啡杯")).toBeVisible();
+  });
+
+  it("keeps text available when catalog loading fails", async () => {
+    productApi.listProducts.mockRejectedValueOnce(new Error("offline"));
+    render(<ChatPage />);
+
+    expect(await screen.findByText("推荐咖啡杯")).toBeVisible();
+    expect(screen.getByText("商品信息加载失败 / Failed to load products")).toBeVisible();
   });
 
   it("shows bilingual empty and list-error states", async () => {

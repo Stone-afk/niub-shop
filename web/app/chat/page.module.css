@@ -241,6 +241,87 @@
   color: #27372f;
 }
 
+.productGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  width: min(88%, 760px);
+  margin: -8px 0 0;
+  padding: 0;
+  align-self: flex-start;
+  list-style: none;
+}
+
+.productCard,
+.unavailableProduct {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid #d6d0c5;
+  border-radius: 14px;
+  background: #fffaf2;
+  color: #27372f;
+}
+
+.productCard strong,
+.unavailableProduct strong {
+  line-height: 1.4;
+}
+
+.productCard p {
+  margin: 0;
+  color: #657068;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.productPrice {
+  color: #93451f;
+  font-weight: 800;
+}
+
+.inStock,
+.outOfStock {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.inStock {
+  background: #e4f1e8;
+  color: #28593c;
+}
+
+.outOfStock {
+  background: #f6e4df;
+  color: #8c2f20;
+}
+
+.unavailableProduct {
+  border-style: dashed;
+  background: #f5f2ec;
+  color: #6a756d;
+}
+
+.unavailableProduct span {
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+
+.productState {
+  width: min(88%, 760px);
+  margin: -8px 0 0;
+  padding: 12px 16px;
+  align-self: flex-start;
+  border: 1px dashed #c8c1b5;
+  border-radius: 12px;
+  background: #f8f6f0;
+  color: #657068;
+  font-size: 0.86rem;
+}
+
 .failedMessage {
   align-self: flex-start;
 }
@@ -347,6 +428,11 @@
     grid-auto-flow: column;
     grid-auto-columns: minmax(180px, 74%);
     overflow-x: auto;
+  }
+
+  .productGrid {
+    grid-template-columns: 1fr;
+    width: 100%;
   }
 
   .header,

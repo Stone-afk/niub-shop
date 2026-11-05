@@ -21,16 +21,29 @@ export function createConversation(): Promise<ConversationSummary> {
   });
 }
 
-export function getConversation(id: string): Promise<ConversationDetail> {
-  return requestJson<ConversationDetail>(
+export async function getConversation(id: string): Promise<ConversationDetail> {
+  const detail = await requestJson<ConversationDetail>(
     `/api/conversations/${encodeURIComponent(id)}`,
   );
+  if (
+    !Array.isArray(detail.turns) ||
+    detail.turns.some(
+      (turn) =>
+        !Array.isArray(turn.recommended_product_ids) ||
+        turn.recommended_product_ids.some((productId) => typeof productId !== "string" || !productId) ||
+        new Set(turn.recommended_product_ids).size !== turn.recommended_product_ids.length,
+    )
+  ) {
+    throw new Error("Invalid conversation response");
+  }
+  return detail;
 }
 
 export async function streamConversationTurn(
   conversationId: string,
   content: string,
   onDelta: (content: string) => void,
+  onRecommendations?: (ids: string[]) => void,
 ): Promise<void> {
   const response = await fetch(
     `/api/conversations/${encodeURIComponent(conversationId)}/turns`,
@@ -40,17 +53,26 @@ export async function streamConversationTurn(
       body: JSON.stringify({ content }),
     },
   );
-  return consumeChatStream(response, onDelta, "Conversation request failed");
+  return consumeChatStream(response, onDelta, {
+    onRecommendations,
+    requireRecommendations: true,
+    requestError: "Conversation request failed",
+  });
 }
 
 export async function retryConversationTurn(
   conversationId: string,
   turnId: string,
   onDelta: (content: string) => void,
+  onRecommendations?: (ids: string[]) => void,
 ): Promise<void> {
   const response = await fetch(
     `/api/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,
     { method: "POST" },
   );
-  return consumeChatStream(response, onDelta, "Conversation request failed");
+  return consumeChatStream(response, onDelta, {
+    onRecommendations,
+    requireRecommendations: true,
+    requestError: "Conversation request failed",
+  });
 }

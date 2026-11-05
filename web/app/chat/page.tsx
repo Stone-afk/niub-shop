@@ -9,7 +9,8 @@ import {
   retryConversationTurn,
   streamConversationTurn,
 } from "@/lib/conversations";
-import type { ConversationDetail, ConversationSummary } from "@/lib/types";
+import { listProducts } from "@/lib/products";
+import type { ConversationDetail, ConversationSummary, Product } from "@/lib/types";
 import styles from "./page.module.css";
 
 const NEW_CHAT_KEY = "__new_chat__";
@@ -18,7 +19,65 @@ type StreamView = {
   userContent: string;
   assistantContent: string;
   showUser: boolean;
+  productIds: string[];
 };
+
+function formatPrice(product: Product): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: product.currency,
+    currencyDisplay: "code",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(product.price_cents / 100);
+}
+
+function ProductCards({
+  ids,
+  catalog,
+  catalogError,
+}: {
+  ids: string[];
+  catalog: Map<string, Product> | null;
+  catalogError: boolean;
+}) {
+  if (ids.length === 0) return null;
+  if (catalogError) {
+    return <p className={styles.productState}>商品信息加载失败 / Failed to load products</p>;
+  }
+  if (!catalog) {
+    return <p className={styles.productState}>正在加载商品… / Loading products…</p>;
+  }
+  return (
+    <ul className={styles.productGrid} aria-label="推荐商品 / Recommended products">
+      {ids.map((id) => {
+        const product = catalog.get(id);
+        if (!product) {
+          return (
+            <li className={styles.unavailableProduct} key={id}>
+              <strong>商品暂不可用 / Product unavailable</strong>
+              <span>{id}</span>
+            </li>
+          );
+        }
+        return (
+          <li className={styles.productCard} key={id}>
+            <strong>{product.name}</strong>
+            <span className={styles.productPrice}>{formatPrice(product)}</span>
+            <p>{product.description}</p>
+            <span
+              className={product.availability === "in_stock" ? styles.inStock : styles.outOfStock}
+            >
+              {product.availability === "in_stock"
+                ? "有货 / In stock"
+                : "暂时缺货 / Out of stock"}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 export default function ChatPage() {
   const [summaries, setSummaries] = useState<ConversationSummary[]>([]);
@@ -31,6 +90,8 @@ export default function ChatPage() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [streams, setStreams] = useState<Record<string, StreamView>>({});
   const [operationErrors, setOperationErrors] = useState<Record<string, boolean>>({});
+  const [catalog, setCatalog] = useState<Map<string, Product> | null>(null);
+  const [catalogError, setCatalogError] = useState(false);
   const endMarker = useRef<HTMLDivElement>(null);
   const requestedDetails = useRef(new Set<string>());
 
@@ -47,6 +108,20 @@ export default function ChatPage() {
       })
       .finally(() => {
         if (active) setListLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    listProducts()
+      .then((products) => {
+        if (active) setCatalog(new Map(products.map((product) => [product.id, product])));
+      })
+      .catch(() => {
+        if (active) setCatalogError(true);
       });
     return () => {
       active = false;
@@ -100,6 +175,14 @@ export default function ChatPage() {
     });
   }
 
+  function setRecommendations(conversationId: string, productIds: string[]) {
+    setStreams((current) => {
+      const stream = current[conversationId];
+      if (!stream) return current;
+      return { ...current, [conversationId]: { ...stream, productIds } };
+    });
+  }
+
   async function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = draft.trim();
@@ -124,10 +207,13 @@ export default function ChatPage() {
       const targetId = conversationId;
       setStreams((current) => ({
         ...current,
-        [targetId]: { userContent: content, assistantContent: "", showUser: true },
+        [targetId]: { userContent: content, assistantContent: "", showUser: true, productIds: [] },
       }));
-      await streamConversationTurn(targetId, content, (delta) =>
-        appendDelta(targetId, delta),
+      await streamConversationTurn(
+        targetId,
+        content,
+        (delta) => appendDelta(targetId, delta),
+        (ids) => setRecommendations(targetId, ids),
       );
     } catch {
       const errorKey = conversationId ?? NEW_CHAT_KEY;
@@ -158,11 +244,14 @@ export default function ChatPage() {
     setOperationErrors((current) => ({ ...current, [conversationId]: false }));
     setStreams((current) => ({
       ...current,
-      [conversationId]: { userContent: "", assistantContent: "", showUser: false },
+      [conversationId]: { userContent: "", assistantContent: "", showUser: false, productIds: [] },
     }));
     try {
-      await retryConversationTurn(conversationId, turnId, (delta) =>
-        appendDelta(conversationId, delta),
+      await retryConversationTurn(
+        conversationId,
+        turnId,
+        (delta) => appendDelta(conversationId, delta),
+        (ids) => setRecommendations(conversationId, ids),
       );
     } catch {
       setOperationErrors((current) => ({ ...current, [conversationId]: true }));
@@ -251,10 +340,17 @@ export default function ChatPage() {
                     <p>{turn.user_content}</p>
                   </article>
                   {turn.status === "completed" && (
-                    <article className={`${styles.message} ${styles.agentMessage}`}>
-                      <span className={styles.messageLabel}>Agent / 智能助手</span>
-                      <p>{turn.assistant_content}</p>
-                    </article>
+                    <>
+                      <article className={`${styles.message} ${styles.agentMessage}`}>
+                        <span className={styles.messageLabel}>Agent / 智能助手</span>
+                        <p>{turn.assistant_content}</p>
+                      </article>
+                      <ProductCards
+                        ids={turn.recommended_product_ids ?? []}
+                        catalog={catalog}
+                        catalogError={catalogError}
+                      />
+                    </>
                   )}
                   {turn.status === "failed" && (
                     <article className={`${styles.message} ${styles.failedMessage}`}>
@@ -281,6 +377,11 @@ export default function ChatPage() {
                     <span className={styles.messageLabel}>Agent / 智能助手</span>
                     <p>{stream.assistantContent || "正在思考… / Thinking…"}</p>
                   </article>
+                  <ProductCards
+                    ids={stream.productIds}
+                    catalog={catalog}
+                    catalogError={catalogError}
+                  />
                 </div>
               )}
               <div ref={endMarker} />

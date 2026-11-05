@@ -4,6 +4,9 @@ export interface Product {
   description: string;
   price_cents: number;
   currency: string;
+  category: string;
+  tags: string[];
+  availability: "in_stock" | "out_of_stock";
 }
 
 export interface ProductList {
@@ -27,6 +30,7 @@ export interface ConversationTurn {
   error_code: string | null;
   created_at: string;
   updated_at: string;
+  recommended_product_ids: string[];
 }
 
 export interface ConversationSummary {
