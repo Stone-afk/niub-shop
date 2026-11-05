@@ -1,7 +1,0 @@
-llm:
-  provider: openai-compatible
-  base_url: https://api.deepseek.com
-  api_key: replace-with-your-api-key
-  model: deepseek-flash
-  timeout_seconds: 60
-  system_prompt: 你是牛布商城的智能购物助手。
