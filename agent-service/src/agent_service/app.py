@@ -41,6 +41,7 @@ from .recommendation_agent import (
     ToolArgumentsInvalid,
     ToolLoopExceeded,
     UnknownTool,
+    create_recommendation_agent,
 )
 
 
@@ -184,30 +185,39 @@ def create_app(
     ] = OpenAICompatibleProvider,
     repository: ConversationRepository | None = None,
     recommendation_agent=None,
+    recommendation_agent_factory: Callable[[LLMConfig, ProductSearchTool], object]
+    | None = None,
     product_tool_factory: Callable[[str], ProductSearchTool] | None = None,
 ) -> FastAPI:
     resolved_provider = provider
     resolved_system_prompt = system_prompt
+    resolved_config: LLMConfig | None = None
 
     if resolved_provider is None:
         resolved_config_path = config_path or os.getenv("AGENT_CONFIG_FILE")
         if resolved_config_path:
-            config = load_llm_config(resolved_config_path)
-            resolved_provider = provider_factory(config)
-            resolved_system_prompt = config.system_prompt
+            resolved_config = load_llm_config(resolved_config_path)
+            resolved_provider = provider_factory(resolved_config)
+            resolved_system_prompt = resolved_config.system_prompt
 
     resolved_recommendation_agent = recommendation_agent
-    if resolved_recommendation_agent is None and resolved_provider is not None:
+    if resolved_recommendation_agent is None and resolved_config is not None:
         mall_service_url = os.getenv("MALL_SERVICE_URL", "http://localhost:8001")
         product_tool = (
             product_tool_factory(mall_service_url)
             if product_tool_factory is not None
             else MallProductSearchTool(MallClient(mall_service_url))
         )
-        resolved_recommendation_agent = RecommendationAgent(
-            resolved_provider,
-            product_tool,
-        )
+        if recommendation_agent_factory is not None:
+            resolved_recommendation_agent = recommendation_agent_factory(
+                resolved_config,
+                product_tool,
+            )
+        else:
+            resolved_recommendation_agent = create_recommendation_agent(
+                resolved_config,
+                product_tool,
+            )
     persistent_model_configured = resolved_recommendation_agent is not None
 
     resolved_repository = repository or ConversationRepository(

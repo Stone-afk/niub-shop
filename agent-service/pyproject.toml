@@ -11,6 +11,7 @@ dependencies = [
     "anyio>=4,<5",
     "fastapi>=0.115,<1",
     "httpx>=0.27,<1",
+    "openai-agents>=0.24,<1",
     "PyYAML>=6,<7",
     "uvicorn[standard]>=0.30,<1",
 ]

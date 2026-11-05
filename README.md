@@ -25,7 +25,7 @@ The browser talks only to Next.js. `web` acts as a BFF: product requests go to `
 ## 模块 / Modules
 
 - `mall-service`：FastAPI 商品目录服务，使用带分类、标签和库存状态的确定性内存示例数据。 / FastAPI product catalog backed by deterministic in-memory data with categories, tags, and availability.
-- `agent-service`：厂商无关 Agent 和聊天 API，通过原生 tool calling 按需查询商城。 / Vendor-neutral agent and chat API that queries the mall on demand through native tool calling.
+- `agent-service`：聊天 API 与 OpenAI Agents SDK ReAct Agent；通过配置的 OpenAI-compatible Chat Completions endpoint 按需查询商城。 / Chat API and an OpenAI Agents SDK ReAct agent that queries the mall on demand through the configured OpenAI-compatible Chat Completions endpoint.
 - `web`：Next.js App Router 商城页面和服务端代理。 / Next.js App Router storefront and server-side proxies.
 
 ## 环境要求 / Prerequisites
@@ -161,15 +161,15 @@ An assistant answer is saved only after the stream completes. Interrupted or fai
 
 ## 商品推荐 Agent / Product recommendation agent
 
-持久化 conversation API 使用 OpenAI-compatible 原生工具调用，执行以下受控流程：
+持久化 conversation API 使用 OpenAI Agents SDK 管理 ReAct 循环，执行以下受控流程：
 
-The persisted conversation API uses OpenAI-compatible native tool calling with this controlled flow:
+The persisted conversation API uses the OpenAI Agents SDK to manage the ReAct loop:
 
 ```text
-模型选择 search_products / model selects search_products
-  → Agent 校验结构化筛选 / validates structured filters
-  → Agent 查询 Mall mock 目录 / queries the Mall mock catalog
-  → 工具结果回传模型 / returns trusted tool results
+Agents SDK Runner 执行 Agent / Agents SDK Runner executes the Agent
+  → 模型选择 search_products / model selects search_products
+  → function tool 校验筛选并查询 Mall / function tool validates filters and queries Mall
+  → SDK 将结果回传模型继续推理 / SDK returns the result for another reasoning step
   → 模型调用 submit_product_recommendation
   → Agent 校验回答与商品 ID / validates answer and product IDs
   → 原子保存并发送 SSE / atomically persists and emits SSE
@@ -200,6 +200,8 @@ The answer and ordered product IDs are stored in one SQLite transaction. After r
 模型协议、工具参数、商城访问或最终校验失败时，本轮标记为 failed，不保存部分回答或商品 ID；页面允许重试最新失败轮次。所有公开错误使用稳定代码，且不包含模型响应、工具正文或密钥。
 
 If model protocol, tool arguments, Mall access, or final validation fails, the turn becomes failed without partial answer or product IDs. The UI can retry the newest failed turn. Public errors use stable codes and never include model responses, tool bodies, or secrets.
+
+SDK Agent 使用 YAML 的 `base_url`、`api_key`、`model` 和 `timeout_seconds` 构造 OpenAI-compatible Chat Completions 模型；DeepSeek 等非 OpenAI endpoint 默认关闭 Agents SDK tracing。/ The SDK Agent builds an OpenAI-compatible Chat Completions model from YAML `base_url`, `api_key`, `model`, and `timeout_seconds`; Agents SDK tracing is disabled by default for non-OpenAI endpoints such as DeepSeek.
 
 ### Web BFF · `:3000`
 

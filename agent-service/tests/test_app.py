@@ -188,6 +188,7 @@ def make_client(
     system_prompt: str | None = None,
     config_path: str | Path | None = None,
     provider_factory: Callable[[LLMConfig], StreamingModelProvider] | None = None,
+    recommendation_agent_factory: Callable[[LLMConfig, object], object] | None = None,
 ) -> httpx.AsyncClient:
     arguments: dict[str, object] = {
         "provider": provider,
@@ -196,6 +197,8 @@ def make_client(
     }
     if provider_factory is not None:
         arguments["provider_factory"] = provider_factory
+    if recommendation_agent_factory is not None:
+        arguments["recommendation_agent_factory"] = recommendation_agent_factory
     app = create_app(**arguments)
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -350,6 +353,52 @@ llm:
 
 
 @pytest.mark.anyio
+async def test_yaml_config_builds_separate_sdk_recommendation_agent(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        """\
+llm:
+  provider: openai-compatible
+  base_url: https://model.example/v1
+  api_key: local-test-key
+  model: example-model
+  timeout_seconds: 15
+  system_prompt: YAML 中的系统提示
+""",
+        encoding="utf-8",
+    )
+    provider = RecordingProvider(("configured",))
+    sdk_agent = FakeRecommendationAgent(RecommendationResult("SDK reply", ()))
+    received: list[tuple[LLMConfig, object]] = []
+
+    def provider_factory(config: LLMConfig) -> StreamingModelProvider:
+        return provider
+
+    def recommendation_factory(config: LLMConfig, product_tool: object) -> object:
+        received.append((config, product_tool))
+        return sdk_agent
+
+    async with make_client(
+        config_path=config_file,
+        provider_factory=provider_factory,
+        recommendation_agent_factory=recommendation_factory,
+    ) as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 200
+    assert len(received) == 1
+    assert received[0][0].base_url == "https://model.example/v1"
+    assert received[0][0].model == "example-model"
+    assert received[0][0].timeout_seconds == 15
+    assert received[0][0].api_key == "local-test-key"
+
+
+@pytest.mark.anyio
 async def test_create_app_wires_product_tool_from_mall_service_url_without_io(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -362,10 +411,28 @@ async def test_create_app_wires_product_tool_from_mall_service_url_without_io(
         received_urls.append(url)
         return UnusedProductTool()
 
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        """\
+llm:
+  provider: openai-compatible
+  base_url: https://model.example/v1
+  api_key: local-test-key
+  model: example-model
+  timeout_seconds: 15
+  system_prompt: system
+""",
+        encoding="utf-8",
+    )
+
     monkeypatch.setenv("MALL_SERVICE_URL", "http://mall.internal:8001")
     application = create_app(
-        ToolCapableProvider(),
+        config_path=config_file,
+        provider_factory=lambda _config: RecordingProvider(),
         repository=repository,
+        recommendation_agent_factory=lambda _config, _tool: FakeRecommendationAgent(
+            RecommendationResult("wired answer", ())
+        ),
         product_tool_factory=tool_factory,
     )
     async with httpx.AsyncClient(
