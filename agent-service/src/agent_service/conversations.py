@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,6 +42,7 @@ class Turn:
     error_code: str | None
     created_at: str
     updated_at: str
+    recommended_product_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,15 @@ class ConversationRepository:
                         ON turns(conversation_id, created_at);
                     CREATE UNIQUE INDEX IF NOT EXISTS one_pending_turn_per_conversation
                         ON turns(conversation_id) WHERE status = 'pending';
+
+                    CREATE TABLE IF NOT EXISTS turn_recommendations (
+                        turn_id TEXT NOT NULL,
+                        product_id TEXT NOT NULL CHECK(length(product_id) > 0),
+                        position INTEGER NOT NULL CHECK(position >= 0),
+                        PRIMARY KEY (turn_id, product_id),
+                        UNIQUE (turn_id, position),
+                        FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE CASCADE
+                    );
                     """
                 )
 
@@ -162,13 +172,28 @@ class ConversationRepository:
                    ORDER BY created_at, rowid""",
                 (conversation_id,),
             ).fetchall()
+            recommendation_rows = connection.execute(
+                """SELECT r.turn_id, r.product_id FROM turn_recommendations r
+                   JOIN turns t ON t.id = r.turn_id
+                   WHERE t.conversation_id = ?
+                   ORDER BY r.turn_id, r.position""",
+                (conversation_id,),
+            ).fetchall()
+        recommendations: dict[str, list[str]] = {}
+        for recommendation in recommendation_rows:
+            recommendations.setdefault(recommendation["turn_id"], []).append(
+                recommendation["product_id"]
+            )
         return Conversation(
             id=row["id"],
             user_id=row["user_id"],
             title=row["title"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            turns=tuple(self._turn(item) for item in turn_rows),
+            turns=tuple(
+                self._turn(item, tuple(recommendations.get(item["id"], ())))
+                for item in turn_rows
+            ),
         )
 
     def create_turn(
@@ -222,18 +247,46 @@ class ConversationRepository:
         conversation_id: str,
         turn_id: str,
         assistant_content: str,
+        recommended_product_ids: Sequence[str] = (),
     ) -> Turn:
         if not assistant_content:
             raise ValueError("assistant content must not be empty")
-        return self._transition(
-            user_id,
-            conversation_id,
-            turn_id,
-            expected="pending",
-            status="completed",
-            assistant_content=assistant_content,
-            error_code=None,
-        )
+        product_ids = tuple(recommended_product_ids)
+        if any(not isinstance(product_id, str) or not product_id for product_id in product_ids):
+            raise ValueError("recommended product IDs must be non-empty strings")
+        if len(set(product_ids)) != len(product_ids):
+            raise ValueError("recommended product IDs must be unique")
+
+        now = _utc_now()
+        with self._connection() as connection, connection:
+            self._conversation_row(connection, user_id, conversation_id)
+            cursor = connection.execute(
+                """UPDATE turns SET status = 'completed', assistant_content = ?,
+                   error_code = NULL, updated_at = ?
+                   WHERE id = ? AND conversation_id = ? AND status = 'pending'""",
+                (assistant_content, now, turn_id, conversation_id),
+            )
+            if cursor.rowcount != 1:
+                raise ConversationNotFound("turn not found")
+            connection.execute(
+                "DELETE FROM turn_recommendations WHERE turn_id = ?", (turn_id,)
+            )
+            connection.executemany(
+                """INSERT INTO turn_recommendations
+                   (turn_id, product_id, position) VALUES (?, ?, ?)""",
+                (
+                    (turn_id, product_id, position)
+                    for position, product_id in enumerate(product_ids)
+                ),
+            )
+            connection.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (now, conversation_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM turns WHERE id = ?", (turn_id,)
+            ).fetchone()
+        return self._turn(row, product_ids)
 
     def fail_turn(
         self,
@@ -270,6 +323,9 @@ class ConversationRepository:
                 raise TurnNotRetryable("turn is not retryable")
             now = _utc_now()
             try:
+                connection.execute(
+                    "DELETE FROM turn_recommendations WHERE turn_id = ?", (turn_id,)
+                )
                 connection.execute(
                     """UPDATE turns SET status = 'pending', assistant_content = NULL,
                        error_code = NULL, updated_at = ? WHERE id = ?""",
@@ -316,6 +372,16 @@ class ConversationRepository:
     def recover_pending(self, user_id: int) -> int:
         now = _utc_now()
         with self._connection() as connection, connection:
+            pending_ids = connection.execute(
+                """SELECT id FROM turns WHERE status = 'pending'
+                   AND conversation_id IN
+                       (SELECT id FROM conversations WHERE user_id = ?)""",
+                (user_id,),
+            ).fetchall()
+            connection.executemany(
+                "DELETE FROM turn_recommendations WHERE turn_id = ?",
+                ((row["id"],) for row in pending_ids),
+            )
             cursor = connection.execute(
                 """UPDATE turns SET status = 'failed', assistant_content = NULL,
                    error_code = 'service_restarted', updated_at = ?
@@ -362,6 +428,10 @@ class ConversationRepository:
             )
             if cursor.rowcount != 1:
                 raise ConversationNotFound("turn not found")
+            if status != "completed":
+                connection.execute(
+                    "DELETE FROM turn_recommendations WHERE turn_id = ?", (turn_id,)
+                )
             connection.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (now, conversation_id),
@@ -384,7 +454,9 @@ class ConversationRepository:
         return row
 
     @staticmethod
-    def _turn(row: sqlite3.Row) -> Turn:
+    def _turn(
+        row: sqlite3.Row, recommended_product_ids: tuple[str, ...] = ()
+    ) -> Turn:
         return Turn(
             id=row["id"],
             conversation_id=row["conversation_id"],
@@ -394,6 +466,7 @@ class ConversationRepository:
             error_code=row["error_code"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            recommended_product_ids=recommended_product_ids,
         )
 
     @staticmethod

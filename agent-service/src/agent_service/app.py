@@ -32,6 +32,15 @@ from .providers import (
     OpenAICompatibleProvider,
     StreamingModelProvider,
 )
+from .mall_client import MallClient, MallServiceUnavailable
+from .product_tools import MallProductSearchTool, ProductSearchTool
+from .recommendation_agent import (
+    RecommendationAgent,
+    RecommendationInvalid,
+    ToolArgumentsInvalid,
+    ToolLoopExceeded,
+    UnknownTool,
+)
 
 
 class ChatMessage(BaseModel):
@@ -55,6 +64,11 @@ class TurnRequest(BaseModel):
 
 class _UnconfiguredProvider:
     async def open_stream(self, messages: list[ModelMessage]) -> ModelStream:
+        raise ModelUpstreamError("Model service is not configured")
+
+
+class _UnconfiguredRecommendationAgent:
+    async def generate(self, messages: list[ModelMessage]):
         raise ModelUpstreamError("Model service is not configured")
 
 
@@ -96,9 +110,17 @@ async def _persisted_model_events(
         yield f"event: error\ndata: {payload}\n\n"
         return
     else:
+        payload = json.dumps(
+            {"product_ids": list(stream.recommended_product_ids)},
+            ensure_ascii=False,
+        )
+        yield f"event: recommendations\ndata: {payload}\n\n"
         yield "event: done\ndata: {}\n\n"
     finally:
         await iterator.aclose()
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
 
 
 def create_app(
@@ -110,6 +132,8 @@ def create_app(
         [LLMConfig], StreamingModelProvider
     ] = OpenAICompatibleProvider,
     repository: ConversationRepository | None = None,
+    recommendation_agent=None,
+    product_tool_factory: Callable[[str], ProductSearchTool] | None = None,
 ) -> FastAPI:
     resolved_provider = provider
     resolved_system_prompt = system_prompt
@@ -121,12 +145,26 @@ def create_app(
             resolved_provider = provider_factory(config)
             resolved_system_prompt = config.system_prompt
 
+    resolved_recommendation_agent = recommendation_agent
+    if resolved_recommendation_agent is None and resolved_provider is not None:
+        mall_service_url = os.getenv("MALL_SERVICE_URL", "http://localhost:8001")
+        product_tool = (
+            product_tool_factory(mall_service_url)
+            if product_tool_factory is not None
+            else MallProductSearchTool(MallClient(mall_service_url))
+        )
+        resolved_recommendation_agent = RecommendationAgent(
+            resolved_provider,
+            product_tool,
+        )
+    persistent_model_configured = resolved_recommendation_agent is not None
+
     resolved_repository = repository or ConversationRepository(
         Path(os.getenv("AGENT_DB_FILE", "data/agent.db"))
     )
     service = ConversationService(
         resolved_repository,
-        resolved_provider or _UnconfiguredProvider(),
+        resolved_recommendation_agent or _UnconfiguredRecommendationAgent(),
         resolved_system_prompt,
     )
 
@@ -225,6 +263,9 @@ def create_app(
                     "error_code": turn.error_code,
                     "created_at": turn.created_at,
                     "updated_at": turn.updated_at,
+                    "recommended_product_ids": list(
+                        turn.recommended_product_ids
+                    ),
                 }
                 for turn in item.turns
             ],
@@ -233,7 +274,7 @@ def create_app(
     async def stream_result(
         operation: Callable[[], Awaitable[PersistedTurnStream]],
     ) -> StreamingResponse | JSONResponse:
-        if resolved_provider is None:
+        if not persistent_model_configured:
             return _error_response(
                 503,
                 "model_not_configured",
@@ -258,6 +299,36 @@ def create_app(
                 502,
                 "model_service_unavailable",
                 "Model service is unavailable",
+            )
+        except ModelProtocolError:
+            return _error_response(
+                502,
+                "model_stream_failed",
+                "Model response failed / 模型响应失败",
+            )
+        except MallServiceUnavailable:
+            return _error_response(
+                502,
+                "mall_service_unavailable",
+                "Mall service is unavailable / 商城服务不可用",
+            )
+        except ToolArgumentsInvalid:
+            return _error_response(
+                502,
+                "tool_arguments_invalid",
+                "Product search arguments are invalid / 商品搜索参数无效",
+            )
+        except ToolLoopExceeded:
+            return _error_response(
+                502,
+                "tool_loop_exceeded",
+                "Product search limit exceeded / 商品搜索次数超限",
+            )
+        except (RecommendationInvalid, UnknownTool):
+            return _error_response(
+                502,
+                "recommendation_invalid",
+                "Recommendation result is invalid / 推荐结果无效",
             )
         return StreamingResponse(
             _persisted_model_events(stream),

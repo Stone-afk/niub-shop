@@ -11,9 +11,14 @@ from agent_service.conversations import ConversationRepository
 from agent_service.providers import (
     ModelMessage,
     ModelProtocolError,
+    ModelResponse,
     ModelStream,
     ModelUpstreamError,
     StreamingModelProvider,
+)
+from agent_service.recommendation_agent import (
+    RecommendationInvalid,
+    RecommendationResult,
 )
 
 
@@ -78,6 +83,34 @@ class NetworkFailureStream:
         self.closed = True
 
 
+class FakeRecommendationAgent:
+    def __init__(
+        self,
+        result: RecommendationResult = RecommendationResult("你好！", ()),
+        *,
+        error: BaseException | None = None,
+    ) -> None:
+        self.result = result
+        self.error = error
+        self.messages = []
+
+    async def generate(self, messages):
+        self.messages.append(list(messages))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class ToolCapableProvider(RecordingProvider):
+    async def complete_response(self, messages, *, tools, tool_choice="auto"):
+        return ModelResponse("wired answer", ())
+
+
+class UnusedProductTool:
+    async def search(self, filters):
+        raise AssertionError("plain conversation must not search products")
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
@@ -109,13 +142,27 @@ def make_persistent_client(
     provider: StreamingModelProvider | None = None,
     *,
     system_prompt: str | None = "system",
+    recommendation_agent: FakeRecommendationAgent | None = None,
 ) -> tuple[httpx.AsyncClient, ConversationRepository]:
     repository = ConversationRepository(tmp_path / "agent.db")
     repository.initialize()
+    if recommendation_agent is None:
+        error = provider.open_error if isinstance(provider, RecordingProvider) else None
+        if isinstance(provider, RecordingProvider) and provider.stream._fail_after_chunks:
+            error = ModelProtocolError("secret upstream response")
+        answer = (
+            "".join(provider.stream._chunks)
+            if isinstance(provider, RecordingProvider)
+            else "你好！"
+        )
+        recommendation_agent = FakeRecommendationAgent(
+            RecommendationResult(answer, ()), error=error
+        )
     app = create_app(
         provider,
         system_prompt=system_prompt,
         repository=repository,
+        recommendation_agent=recommendation_agent,
     )
     return (
         httpx.AsyncClient(
@@ -234,6 +281,37 @@ llm:
         "role": "system",
         "content": "YAML 中的系统提示",
     }
+
+
+@pytest.mark.anyio
+async def test_create_app_wires_product_tool_from_mall_service_url_without_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = ConversationRepository(tmp_path / "agent.db")
+    repository.initialize()
+    conversation = repository.create_conversation(1)
+    received_urls: list[str] = []
+
+    def tool_factory(url: str):
+        received_urls.append(url)
+        return UnusedProductTool()
+
+    monkeypatch.setenv("MALL_SERVICE_URL", "http://mall.internal:8001")
+    application = create_app(
+        ToolCapableProvider(),
+        repository=repository,
+        product_tool_factory=tool_factory,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": "hello"}
+        )
+
+    assert received_urls == ["http://mall.internal:8001"]
+    assert response.status_code == 200
+    assert "wired answer" in response.text
 
 
 @pytest.mark.anyio
@@ -377,13 +455,67 @@ async def test_send_turn_streams_and_persists_completed_answer(tmp_path: Path) -
 
     assert response.status_code == 200
     assert response.text == (
-        'event: delta\ndata: {"content": "你"}\n\n'
-        'event: delta\ndata: {"content": "好"}\n\n'
+        'event: delta\ndata: {"content": "你好"}\n\n'
+        'event: recommendations\ndata: {"product_ids": []}\n\n'
         "event: done\ndata: {}\n\n"
     )
     stored = repository.get_conversation(1, conversation.id).turns[0]
     assert stored.user_content == "问题"
     assert stored.assistant_content == "你好"
+
+
+@pytest.mark.anyio
+async def test_send_turn_emits_and_exposes_persisted_recommendations(
+    tmp_path: Path,
+) -> None:
+    agent = FakeRecommendationAgent(
+        RecommendationResult("推荐杯子", ("ceramic-mug", "canvas-tote"))
+    )
+    client, repository = make_persistent_client(
+        tmp_path, RecordingProvider(), recommendation_agent=agent
+    )
+    conversation = repository.create_conversation(1)
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": "推荐商品"}
+        )
+        detail = await client.get(f"/conversations/{conversation.id}")
+
+    assert response.text == (
+        'event: delta\ndata: {"content": "推荐杯子"}\n\n'
+        'event: recommendations\ndata: '
+        '{"product_ids": ["ceramic-mug", "canvas-tote"]}\n\n'
+        'event: done\ndata: {}\n\n'
+    )
+    assert detail.json()["turns"][0]["recommended_product_ids"] == [
+        "ceramic-mug",
+        "canvas-tote",
+    ]
+
+
+@pytest.mark.anyio
+async def test_invalid_recommendation_generation_maps_to_safe_502(
+    tmp_path: Path,
+) -> None:
+    agent = FakeRecommendationAgent(error=RecommendationInvalid("secret answer"))
+    client, repository = make_persistent_client(
+        tmp_path, RecordingProvider(), recommendation_agent=agent
+    )
+    conversation = repository.create_conversation(1)
+
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": "问题"}
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": {
+            "code": "recommendation_invalid",
+            "message": "Recommendation result is invalid / 推荐结果无效",
+        }
+    }
+    assert "secret answer" not in response.text
 
 
 @pytest.mark.anyio
@@ -430,13 +562,8 @@ async def test_send_turn_emits_safe_error_without_done_on_midstream_failure(
             f"/conversations/{conversation.id}/turns", json={"content": "问题"}
         )
 
-    assert response.status_code == 200
-    assert 'event: delta\ndata: {"content": "partial"}\n\n' in response.text
-    assert (
-        'event: error\ndata: {"code": "model_stream_failed", '
-        '"message": "Model stream failed"}\n\n'
-    ) in response.text
-    assert "event: done" not in response.text
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "model_stream_failed"
     assert repository.get_conversation(1, conversation.id).turns[0].status == "failed"
 
 
@@ -482,39 +609,29 @@ async def test_downstream_disconnect_closes_persisted_stream_and_fails_turn(
     repository = ConversationRepository(tmp_path / "agent.db")
     repository.initialize()
     conversation = repository.create_conversation(1)
-    provider = RecordingProvider(("partial", "unused"))
-    stream = await ConversationService(repository, provider, None).open_turn(
-        1, conversation.id, "问题"
-    )
+    agent = FakeRecommendationAgent(RecommendationResult("partial" + "x" * 80, ("one",)))
+    stream = await ConversationService(repository, agent, None).open_turn(1, conversation.id, "问题")
     events = _persisted_model_events(stream)
-    assert await anext(events) == 'event: delta\ndata: {"content": "partial"}\n\n'
+    assert (await anext(events)).startswith('event: delta\ndata: {"content": "partial')
 
     await events.aclose()
 
     stored = repository.get_conversation(1, conversation.id).turns[0]
     assert stored.status == "failed"
     assert stored.assistant_content is None
-    assert provider.stream.closed is True
+    assert stored.recommended_product_ids == ()
 
 
 @pytest.mark.anyio
 async def test_network_stream_failure_emits_safe_error_event(tmp_path: Path) -> None:
-    repository = ConversationRepository(tmp_path / "agent.db")
-    repository.initialize()
-    conversation = repository.create_conversation(1)
-    provider = RecordingProvider()
     network_stream = NetworkFailureStream()
-    provider.stream = network_stream
-    stream = await ConversationService(repository, provider, None).open_turn(
-        1, conversation.id, "问题"
-    )
+    network_stream.recommended_product_ids = ()
 
-    events = [event async for event in _persisted_model_events(stream)]
+    events = [event async for event in _persisted_model_events(network_stream)]
 
     assert events == [
         'event: delta\ndata: {"content": "partial"}\n\n',
         'event: error\ndata: {"code": "model_stream_failed", '
         '"message": "Model stream failed"}\n\n',
     ]
-    assert repository.get_conversation(1, conversation.id).turns[0].status == "failed"
     assert network_stream.closed is True

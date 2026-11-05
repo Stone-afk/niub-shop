@@ -1,9 +1,10 @@
-"""Async orchestration for persisted conversation streams."""
+"""Async orchestration for persisted, buffered recommendation streams."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from functools import partial
+from typing import Protocol
 
 import anyio
 
@@ -13,12 +14,14 @@ from .conversations import (
     ConversationSummary,
     Turn,
 )
-from .providers import (
-    ModelMessage,
-    ModelProtocolError,
-    ModelStream,
-    ModelUpstreamError,
-    StreamingModelProvider,
+from .mall_client import MallServiceUnavailable
+from .providers import ModelMessage, ModelProtocolError, ModelUpstreamError
+from .recommendation_agent import (
+    RecommendationInvalid,
+    RecommendationResult,
+    ToolArgumentsInvalid,
+    ToolLoopExceeded,
+    UnknownTool,
 )
 
 
@@ -29,41 +32,49 @@ def resolve_current_user_id() -> int:
     return LOCAL_USER_ID
 
 
-class PersistedTurnStream:
+class RecommendationGenerator(Protocol):
+    async def generate(
+        self, messages: Sequence[ModelMessage]
+    ) -> RecommendationResult: ...
+
+
+class BufferedRecommendationStream:
     def __init__(
         self,
         repository: ConversationRepository,
-        upstream: ModelStream,
+        result: RecommendationResult,
         user_id: int,
         conversation_id: str,
         turn: Turn,
+        *,
+        chunk_size: int = 64,
     ) -> None:
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be positive")
         self.repository = repository
-        self.upstream = upstream
+        self.result = result
         self.user_id = user_id
         self.conversation_id = conversation_id
         self.turn = turn
+        self.chunk_size = chunk_size
+        self.recommended_product_ids = result.product_ids
 
     def __aiter__(self) -> AsyncIterator[str]:
         return self._iterate()
 
     async def _iterate(self) -> AsyncIterator[str]:
-        chunks: list[str] = []
         completed = False
         try:
-            async for chunk in self.upstream:
-                chunks.append(chunk)
-                yield chunk
-            answer = "".join(chunks)
-            if not answer:
-                raise ModelProtocolError("Model stream returned no content")
+            for offset in range(0, len(self.result.answer), self.chunk_size):
+                yield self.result.answer[offset : offset + self.chunk_size]
             await anyio.to_thread.run_sync(
                 partial(
                     self.repository.complete_turn,
                     self.user_id,
                     self.conversation_id,
                     self.turn.id,
-                    answer,
+                    self.result.answer,
+                    self.result.product_ids,
                 )
             )
             completed = True
@@ -81,23 +92,20 @@ class PersistedTurnStream:
                         abandon_on_cancel=False,
                     )
             raise
-        finally:
-            with anyio.CancelScope(shield=True):
-                try:
-                    await self.upstream.aclose()
-                except BaseException:
-                    pass
+
+
+PersistedTurnStream = BufferedRecommendationStream
 
 
 class ConversationService:
     def __init__(
         self,
         repository: ConversationRepository,
-        provider: StreamingModelProvider,
+        recommendation_agent: RecommendationGenerator,
         system_prompt: str | None,
     ) -> None:
         self.repository = repository
-        self.provider = provider
+        self.recommendation_agent = recommendation_agent
         self.system_prompt = system_prompt
 
     async def list_conversations(self, user_id: int) -> list[ConversationSummary]:
@@ -124,7 +132,7 @@ class ConversationService:
 
     async def open_turn(
         self, user_id: int, conversation_id: str, content: str
-    ) -> PersistedTurnStream:
+    ) -> BufferedRecommendationStream:
         turn = await anyio.to_thread.run_sync(
             self.repository.create_turn, user_id, conversation_id, content
         )
@@ -132,7 +140,7 @@ class ConversationService:
 
     async def retry_turn(
         self, user_id: int, conversation_id: str, turn_id: str
-    ) -> PersistedTurnStream:
+    ) -> BufferedRecommendationStream:
         turn = await anyio.to_thread.run_sync(
             self.repository.prepare_retry, user_id, conversation_id, turn_id
         )
@@ -140,7 +148,7 @@ class ConversationService:
 
     async def _open(
         self, user_id: int, conversation_id: str, turn: Turn
-    ) -> PersistedTurnStream:
+    ) -> BufferedRecommendationStream:
         stored_messages = await anyio.to_thread.run_sync(
             self.repository.model_messages,
             user_id,
@@ -152,8 +160,9 @@ class ConversationService:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.extend(stored_messages)
         try:
-            upstream = await self.provider.open_stream(messages)
-        except BaseException:
+            result = await self.recommendation_agent.generate(messages)
+            self._validate_result(result)
+        except BaseException as error:
             with anyio.CancelScope(shield=True):
                 await anyio.to_thread.run_sync(
                     partial(
@@ -161,15 +170,46 @@ class ConversationService:
                         user_id,
                         conversation_id,
                         turn.id,
-                        "model_service_unavailable",
+                        _generation_error_code(error),
                     ),
                     abandon_on_cancel=False,
                 )
             raise
-        return PersistedTurnStream(
+        return BufferedRecommendationStream(
             self.repository,
-            upstream,
+            result,
             user_id,
             conversation_id,
             turn,
         )
+
+    @staticmethod
+    def _validate_result(result: RecommendationResult) -> None:
+        if (
+            not isinstance(result.answer, str)
+            or not result.answer
+            or len(result.answer) > 20000
+            or len(result.product_ids) > 10
+            or len(set(result.product_ids)) != len(result.product_ids)
+            or any(
+                not isinstance(product_id, str) or not product_id
+                for product_id in result.product_ids
+            )
+        ):
+            raise RecommendationInvalid("Recommendation response is invalid")
+
+
+def _generation_error_code(error: BaseException) -> str:
+    if isinstance(error, ModelUpstreamError):
+        return "model_service_unavailable"
+    if isinstance(error, ModelProtocolError):
+        return "model_stream_failed"
+    if isinstance(error, MallServiceUnavailable):
+        return "mall_service_unavailable"
+    if isinstance(error, ToolArgumentsInvalid):
+        return "tool_arguments_invalid"
+    if isinstance(error, ToolLoopExceeded):
+        return "tool_loop_exceeded"
+    if isinstance(error, (RecommendationInvalid, UnknownTool)):
+        return "recommendation_invalid"
+    return "model_stream_failed"
