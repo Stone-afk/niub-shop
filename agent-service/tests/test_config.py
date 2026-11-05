@@ -152,12 +152,26 @@ def test_rejects_non_http_base_url(tmp_path: Path, base_url: str) -> None:
         load_llm_config(write_config(tmp_path, valid_yaml(base_url=base_url)))
 
 
-@pytest.mark.parametrize("timeout", [0, -1, "fast", True, ".nan", ".inf"])
+@pytest.mark.parametrize("timeout", [0, -1, "fast", True])
 def test_rejects_invalid_timeout(tmp_path: Path, timeout: object) -> None:
     with pytest.raises(ConfigurationError, match="timeout_seconds"):
         load_llm_config(
             write_config(tmp_path, valid_yaml(timeout_seconds=timeout))
         )
+
+
+@pytest.mark.parametrize("yaml_timeout", [".nan", ".inf", "-.inf"])
+def test_rejects_non_finite_yaml_timeout(
+    tmp_path: Path,
+    yaml_timeout: str,
+) -> None:
+    body = valid_yaml().replace(
+        "  timeout_seconds: 45",
+        f"  timeout_seconds: {yaml_timeout}",
+    )
+
+    with pytest.raises(ConfigurationError, match="timeout_seconds"):
+        load_llm_config(write_config(tmp_path, body))
 
 
 def test_rejects_unknown_keys_without_echoing_secret(tmp_path: Path) -> None:
