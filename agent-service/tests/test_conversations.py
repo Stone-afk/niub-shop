@@ -76,6 +76,19 @@ def test_first_turn_sets_truncated_title_and_recent_order(tmp_path: Path) -> Non
     assert repo.get_conversation(1, newer.id).turns == (second,)
 
 
+def test_default_title_text_as_first_message_is_not_replaced_by_second_turn(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    conversation = repo.create_conversation(1)
+    first = repo.create_turn(1, conversation.id, "新对话 / New conversation")
+    repo.complete_turn(1, conversation.id, first.id, "第一答")
+
+    repo.create_turn(1, conversation.id, "第二问")
+
+    assert repo.get_conversation(1, conversation.id).title == "新对话 / New conversation"
+
+
 def test_every_lookup_is_scoped_by_user_id(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     conversation = repo.create_conversation(1)

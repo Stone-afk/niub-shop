@@ -182,6 +182,10 @@ class ConversationRepository:
                     conversation = self._conversation_row(
                         connection, user_id, conversation_id
                     )
+                    is_first_turn = connection.execute(
+                        "SELECT 1 FROM turns WHERE conversation_id = ? LIMIT 1",
+                        (conversation_id,),
+                    ).fetchone() is None
                     connection.execute(
                         """INSERT INTO turns
                            (id, conversation_id, user_content, assistant_content,
@@ -190,7 +194,7 @@ class ConversationRepository:
                         (identifier, conversation_id, content, now, now),
                     )
                     title = conversation["title"]
-                    if title == "新对话 / New conversation":
+                    if is_first_turn:
                         title = content[:60]
                     connection.execute(
                         """UPDATE conversations SET title = ?, updated_at = ?

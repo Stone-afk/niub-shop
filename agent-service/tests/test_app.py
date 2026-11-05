@@ -4,8 +4,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_service.app import create_app
+from agent_service.app import _persisted_model_events, create_app
 from agent_service.config import LLMConfig
+from agent_service.conversation_service import ConversationService
 from agent_service.conversations import ConversationRepository
 from agent_service.providers import (
     ModelMessage,
@@ -60,6 +61,21 @@ class RecordingProvider:
         if self.open_error is not None:
             raise self.open_error
         return self.stream
+
+
+class NetworkFailureStream:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def __aiter__(self) -> AsyncIterator[str]:
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[str]:
+        yield "partial"
+        raise httpx.ReadError("secret network failure")
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 @pytest.fixture
@@ -457,3 +473,48 @@ async def test_retry_streams_on_same_failed_turn(tmp_path: Path) -> None:
     assert len(turns) == 1
     assert turns[0].id == turn.id
     assert turns[0].status == "completed"
+
+
+@pytest.mark.anyio
+async def test_downstream_disconnect_closes_persisted_stream_and_fails_turn(
+    tmp_path: Path,
+) -> None:
+    repository = ConversationRepository(tmp_path / "agent.db")
+    repository.initialize()
+    conversation = repository.create_conversation(1)
+    provider = RecordingProvider(("partial", "unused"))
+    stream = await ConversationService(repository, provider, None).open_turn(
+        1, conversation.id, "问题"
+    )
+    events = _persisted_model_events(stream)
+    assert await anext(events) == 'event: delta\ndata: {"content": "partial"}\n\n'
+
+    await events.aclose()
+
+    stored = repository.get_conversation(1, conversation.id).turns[0]
+    assert stored.status == "failed"
+    assert stored.assistant_content is None
+    assert provider.stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_network_stream_failure_emits_safe_error_event(tmp_path: Path) -> None:
+    repository = ConversationRepository(tmp_path / "agent.db")
+    repository.initialize()
+    conversation = repository.create_conversation(1)
+    provider = RecordingProvider()
+    network_stream = NetworkFailureStream()
+    provider.stream = network_stream
+    stream = await ConversationService(repository, provider, None).open_turn(
+        1, conversation.id, "问题"
+    )
+
+    events = [event async for event in _persisted_model_events(stream)]
+
+    assert events == [
+        'event: delta\ndata: {"content": "partial"}\n\n',
+        'event: error\ndata: {"code": "model_stream_failed", '
+        '"message": "Model stream failed"}\n\n',
+    ]
+    assert repository.get_conversation(1, conversation.id).turns[0].status == "failed"
+    assert network_stream.closed is True

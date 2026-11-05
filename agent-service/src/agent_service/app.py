@@ -80,11 +80,12 @@ async def _model_events(stream: ModelStream) -> AsyncIterator[str]:
 async def _persisted_model_events(
     stream: PersistedTurnStream,
 ) -> AsyncIterator[str]:
+    iterator = stream.__aiter__()
     try:
-        async for content in stream:
+        async for content in iterator:
             payload = json.dumps({"content": content}, ensure_ascii=False)
             yield f"event: delta\ndata: {payload}\n\n"
-    except (ModelProtocolError, ModelUpstreamError):
+    except Exception:
         payload = json.dumps(
             {
                 "code": "model_stream_failed",
@@ -94,7 +95,10 @@ async def _persisted_model_events(
         )
         yield f"event: error\ndata: {payload}\n\n"
         return
-    yield "event: done\ndata: {}\n\n"
+    else:
+        yield "event: done\ndata: {}\n\n"
+    finally:
+        await iterator.aclose()
 
 
 def create_app(
