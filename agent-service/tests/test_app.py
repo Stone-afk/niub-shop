@@ -1,32 +1,64 @@
-from collections.abc import Callable
-from time import perf_counter
+from collections.abc import AsyncIterator, Callable, Sequence
+from pathlib import Path
 
 import httpx
 import pytest
 
 from agent_service.app import create_app
-from agent_service.mall_client import MallServiceUnavailable, ProductData
-from agent_service.providers import EchoProvider
+from agent_service.config import LLMConfig
+from agent_service.providers import (
+    ModelMessage,
+    ModelProtocolError,
+    ModelStream,
+    ModelUpstreamError,
+    StreamingModelProvider,
+)
 
 
-class RecordingMallClient:
-    def __init__(self, *, unavailable: bool = False) -> None:
-        self.calls = 0
-        self.unavailable = unavailable
+class FakeModelStream:
+    def __init__(
+        self,
+        chunks: Sequence[str],
+        *,
+        fail_after_chunks: bool = False,
+    ) -> None:
+        self._chunks = chunks
+        self._fail_after_chunks = fail_after_chunks
+        self.closed = False
 
-    def list_products(self) -> list[ProductData]:
-        self.calls += 1
-        if self.unavailable:
-            raise MallServiceUnavailable
-        return [
-            ProductData(
-                id="canvas-tote",
-                name="Canvas Tote",
-                description="durable",
-                price_cents=59000,
-                currency="TWD",
-            )
-        ]
+    def __aiter__(self) -> AsyncIterator[str]:
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[str]:
+        for chunk in self._chunks:
+            yield chunk
+        if self._fail_after_chunks:
+            raise ModelProtocolError("secret upstream response")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class RecordingProvider:
+    def __init__(
+        self,
+        chunks: Sequence[str] = ("你好", "！"),
+        *,
+        open_error: Exception | None = None,
+        fail_after_chunks: bool = False,
+    ) -> None:
+        self.messages: list[list[ModelMessage]] = []
+        self.open_error = open_error
+        self.stream = FakeModelStream(
+            chunks,
+            fail_after_chunks=fail_after_chunks,
+        )
+
+    async def open_stream(self, messages: Sequence[ModelMessage]) -> ModelStream:
+        self.messages.append(list(messages))
+        if self.open_error is not None:
+            raise self.open_error
+        return self.stream
 
 
 @pytest.fixture
@@ -34,18 +66,21 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-async def make_client(
-    mall_client: RecordingMallClient,
-    clock: Callable[[], int] | None = None,
+def make_client(
+    provider: StreamingModelProvider | None = None,
+    *,
+    system_prompt: str | None = None,
+    config_path: str | Path | None = None,
+    provider_factory: Callable[[LLMConfig], StreamingModelProvider] | None = None,
 ) -> httpx.AsyncClient:
-    if clock is None:
-        app = create_app(mall_client=mall_client, provider=EchoProvider())
-    else:
-        app = create_app(
-            mall_client=mall_client,
-            provider=EchoProvider(),
-            clock=clock,
-        )
+    arguments: dict[str, object] = {
+        "provider": provider,
+        "system_prompt": system_prompt,
+        "config_path": config_path,
+    }
+    if provider_factory is not None:
+        arguments["provider_factory"] = provider_factory
+    app = create_app(**arguments)
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
@@ -53,8 +88,8 @@ async def make_client(
 
 
 @pytest.mark.anyio
-async def test_health_returns_ok() -> None:
-    async with await make_client(RecordingMallClient()) as client:
+async def test_health_returns_ok_when_model_is_unconfigured() -> None:
+    async with make_client() as client:
         response = await client.get("/health")
 
     assert response.status_code == 200
@@ -62,58 +97,148 @@ async def test_health_returns_ok() -> None:
 
 
 @pytest.mark.anyio
-async def test_chat_streams_input_and_timestamp_as_delta_and_done_events() -> None:
-    mall_client = RecordingMallClient()
-    clock_calls = 0
-
-    def clock() -> int:
-        nonlocal clock_calls
-        clock_calls += 1
-        return 1730876543210
-
-    async with await make_client(mall_client, clock) as client:
-        response = await client.post(
-            "/chat",
-            json={"messages": [{"role": "user", "content": "  牛布袋👜  "}]},
-        )
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.text == (
-        'event: delta\ndata: {"content": "你输入的是 "}\n\n'
-        'event: delta\ndata: {"content": "牛布袋👜"}\n\n'
-        'event: delta\ndata: {"content": "\\n当前时间戳："}\n\n'
-        'event: delta\ndata: {"content": "1730876543210"}\n\n'
-        "event: done\ndata: {}\n\n"
-    )
-    assert clock_calls == 1
-    assert mall_client.calls == 0
-
-
-@pytest.mark.anyio
-async def test_chat_accepts_complete_history() -> None:
-    async with await make_client(RecordingMallClient(), lambda: 1730876543210) as client:
+async def test_chat_sends_system_prompt_and_complete_history_to_provider() -> None:
+    provider = RecordingProvider(("第一段", "第二段"))
+    async with make_client(provider, system_prompt="你是商城助手。") as client:
         response = await client.post(
             "/chat",
             json={
                 "messages": [
-                    {"role": "user", "content": "第一轮"},
+                    {"role": "user", "content": "  第一轮  "},
                     {"role": "assistant", "content": "固定回复"},
                     {"role": "user", "content": "第二轮"},
-                    {"role": "assistant", "content": "不要回显这一条"},
                 ]
             },
         )
 
     assert response.status_code == 200
-    assert 'data: {"content": "第二轮"}' in response.text
-    assert "不要回显这一条" not in response.text
-    assert response.text.endswith("event: done\ndata: {}\n\n")
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.text == (
+        'event: delta\ndata: {"content": "第一段"}\n\n'
+        'event: delta\ndata: {"content": "第二段"}\n\n'
+        "event: done\ndata: {}\n\n"
+    )
+    assert provider.messages == [
+        [
+            {"role": "system", "content": "你是商城助手。"},
+            {"role": "user", "content": "第一轮"},
+            {"role": "assistant", "content": "固定回复"},
+            {"role": "user", "content": "第二轮"},
+        ]
+    ]
+    assert provider.stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_chat_omits_done_after_midstream_protocol_failure() -> None:
+    provider = RecordingProvider(("partial",), fail_after_chunks=True)
+    async with make_client(provider, system_prompt="system") as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 200
+    assert response.text == 'event: delta\ndata: {"content": "partial"}\n\n'
+    assert provider.stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_chat_returns_503_when_model_is_unconfigured() -> None:
+    async with make_client() as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "model_not_configured",
+            "message": "Model service is not configured",
+        }
+    }
+
+
+@pytest.mark.anyio
+async def test_chat_builds_provider_from_yaml_config(tmp_path: Path) -> None:
+    config_file = tmp_path / "llm.yaml"
+    config_file.write_text(
+        """\
+llm:
+  provider: openai-compatible
+  base_url: https://model.example/v1
+  api_key: local-test-key
+  model: example-model
+  timeout_seconds: 15
+  system_prompt: YAML 中的系统提示
+""",
+        encoding="utf-8",
+    )
+    provider = RecordingProvider(("configured",))
+    received_configs: list[LLMConfig] = []
+
+    def factory(config: LLMConfig) -> StreamingModelProvider:
+        received_configs.append(config)
+        return provider
+
+    async with make_client(config_path=config_file, provider_factory=factory) as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 200
+    assert len(received_configs) == 1
+    assert received_configs[0].model == "example-model"
+    assert provider.messages[0][0] == {
+        "role": "system",
+        "content": "YAML 中的系统提示",
+    }
+
+
+@pytest.mark.anyio
+async def test_chat_maps_open_failure_to_secret_free_502() -> None:
+    exposed_secret = "must-not-appear"
+    provider = RecordingProvider(
+        open_error=ModelUpstreamError(f"upstream rejected {exposed_secret}")
+    )
+    async with make_client(provider, system_prompt="system") as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": {
+            "code": "model_service_unavailable",
+            "message": "Model service is unavailable",
+        }
+    }
+    assert exposed_secret not in response.text
+
+
+@pytest.mark.anyio
+async def test_injected_provider_takes_precedence_over_config_path() -> None:
+    provider = RecordingProvider(("injected",))
+    async with make_client(
+        provider,
+        system_prompt="injected system",
+        config_path="does-not-exist.yaml",
+    ) as client:
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 200
+    assert provider.messages[0][0]["content"] == "injected system"
 
 
 @pytest.mark.anyio
 async def test_chat_rejects_history_without_user_message() -> None:
-    async with await make_client(RecordingMallClient()) as client:
+    async with make_client(RecordingProvider(), system_prompt="system") as client:
         response = await client.post(
             "/chat",
             json={"messages": [{"role": "assistant", "content": "only reply"}]},
@@ -123,22 +248,8 @@ async def test_chat_rejects_history_without_user_message() -> None:
 
 
 @pytest.mark.anyio
-async def test_chat_paces_demo_delta_events() -> None:
-    async with await make_client(RecordingMallClient()) as client:
-        started_at = perf_counter()
-        response = await client.post(
-            "/chat",
-            json={"messages": [{"role": "user", "content": "hello"}]},
-        )
-        elapsed = perf_counter() - started_at
-
-    assert response.status_code == 200
-    assert elapsed >= 0.08
-
-
-@pytest.mark.anyio
 async def test_empty_messages_returns_422() -> None:
-    async with await make_client(RecordingMallClient()) as client:
+    async with make_client(RecordingProvider(), system_prompt="system") as client:
         response = await client.post("/chat", json={"messages": []})
 
     assert response.status_code == 422
@@ -148,7 +259,7 @@ async def test_empty_messages_returns_422() -> None:
 
 @pytest.mark.anyio
 async def test_whitespace_message_returns_422() -> None:
-    async with await make_client(RecordingMallClient()) as client:
+    async with make_client(RecordingProvider(), system_prompt="system") as client:
         response = await client.post(
             "/chat",
             json={"messages": [{"role": "user", "content": "   "}]},
@@ -166,7 +277,7 @@ async def test_whitespace_message_returns_422() -> None:
 
 @pytest.mark.anyio
 async def test_unknown_role_returns_422() -> None:
-    async with await make_client(RecordingMallClient()) as client:
+    async with make_client(RecordingProvider(), system_prompt="system") as client:
         response = await client.post(
             "/chat",
             json={"messages": [{"role": "system", "content": "hello"}]},
