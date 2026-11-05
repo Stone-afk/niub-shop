@@ -1,0 +1,109 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import Home from "./page";
+
+
+const PRODUCT = {
+  id: "canvas-tote",
+  name: "经典帆布袋 / Classic Canvas Tote",
+  description: "轻量耐用 / Lightweight and durable",
+  price_cents: 59000,
+  currency: "TWD",
+};
+
+
+afterEach(() => vi.unstubAllGlobals());
+
+
+function productResponse(items = [PRODUCT]): Response {
+  return Response.json({ items });
+}
+
+
+describe("storefront", () => {
+  it("shows bilingual headings, loading state, and products", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(productResponse()));
+
+    render(<Home />);
+
+    expect(screen.getByRole("heading", { name: "牛布商城 / Niub Shop" })).toBeVisible();
+    expect(screen.getByText("正在加载商品… / Loading products…")).toBeVisible();
+    expect(await screen.findByText(PRODUCT.name)).toBeVisible();
+    expect(screen.getByText("NT$590")).toBeVisible();
+  });
+
+  it("shows the empty catalog state", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(productResponse([])));
+
+    render(<Home />);
+
+    expect(
+      await screen.findByText("暂无商品 / No products available"),
+    ).toBeVisible();
+  });
+
+  it("shows a product request error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    render(<Home />);
+
+    expect(
+      await screen.findByText("商品加载失败 / Failed to load products"),
+    ).toBeVisible();
+  });
+
+  it("disables chat submission for whitespace-only input", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(productResponse()));
+    const user = userEvent.setup();
+    render(<Home />);
+    await screen.findByText(PRODUCT.name);
+
+    await user.type(screen.getByLabelText("消息 / Message"), "   ");
+
+    expect(screen.getByRole("button", { name: "发送 / Send" })).toBeDisabled();
+  });
+
+  it("shows the latest successful chat reply", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(productResponse())
+      .mockResolvedValueOnce(Response.json({ reply: "这里有两个商品。" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<Home />);
+    await screen.findByText(PRODUCT.name);
+
+    await user.type(screen.getByLabelText("消息 / Message"), "推荐商品");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+
+    expect(await screen.findByText("这里有两个商品。")).toBeVisible();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/chat",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("retains the message when chat fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(productResponse())
+      .mockResolvedValueOnce(
+        Response.json({ error: { message: "offline" } }, { status: 502 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<Home />);
+    await screen.findByText(PRODUCT.name);
+    const input = screen.getByLabelText("消息 / Message");
+
+    await user.type(input, "请再试一次");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+
+    expect(
+      await screen.findByText("聊天请求失败 / Chat request failed"),
+    ).toBeVisible();
+    expect(input).toHaveValue("请再试一次");
+  });
+});
