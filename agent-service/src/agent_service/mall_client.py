@@ -1,6 +1,7 @@
 """Validated HTTP client for the mall service."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -10,6 +11,9 @@ class MallServiceUnavailable(RuntimeError):
     """The mall service did not return a usable product catalog."""
 
 
+Availability = Literal["in_stock", "out_of_stock"]
+
+
 @dataclass(frozen=True)
 class ProductData:
     id: str
@@ -17,6 +21,9 @@ class ProductData:
     description: str
     price_cents: int
     currency: str
+    category: str
+    tags: tuple[str, ...]
+    availability: Availability
 
 
 class _ProductPayload(BaseModel):
@@ -27,6 +34,9 @@ class _ProductPayload(BaseModel):
     description: str
     price_cents: int
     currency: str
+    category: str
+    tags: list[str]
+    availability: Availability
 
 
 class _ProductListPayload(BaseModel):
@@ -66,6 +76,9 @@ class MallClient:
                 description=item.description,
                 price_cents=item.price_cents,
                 currency=item.currency,
+                category=item.category,
+                tags=tuple(item.tags),
+                availability=item.availability,
             )
             for item in payload.items
         ]

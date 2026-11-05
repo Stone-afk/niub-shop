@@ -25,6 +25,9 @@ def test_agent_builds_catalog_prompt_and_returns_provider_reply() -> None:
             description="durable",
             price_cents=59000,
             currency="TWD",
+            category="bags",
+            tags=("everyday", "durable"),
+            availability="in_stock",
         )
     ]
 

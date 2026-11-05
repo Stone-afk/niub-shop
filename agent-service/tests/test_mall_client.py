@@ -12,6 +12,9 @@ PRODUCT_RESPONSE = {
             "description": "durable",
             "price_cents": 59000,
             "currency": "TWD",
+            "category": "bags",
+            "tags": ["everyday", "durable"],
+            "availability": "in_stock",
         }
     ]
 }
@@ -31,6 +34,9 @@ def test_list_products_returns_validated_product_data() -> None:
             description="durable",
             price_cents=59000,
             currency="TWD",
+            category="bags",
+            tags=("everyday", "durable"),
+            availability="in_stock",
         )
     ]
 
@@ -57,8 +63,37 @@ def test_list_products_normalizes_trailing_slash() -> None:
             200,
             json={"items": [{"id": "broken", "price_cents": "59000"}]},
         ),
+        lambda request: httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        **PRODUCT_RESPONSE["items"][0],
+                        "tags": "everyday",
+                    }
+                ]
+            },
+        ),
+        lambda request: httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        **PRODUCT_RESPONSE["items"][0],
+                        "availability": "backordered",
+                    }
+                ]
+            },
+        ),
     ],
-    ids=["network", "non-2xx", "non-json", "invalid-schema"],
+    ids=[
+        "network",
+        "non-2xx",
+        "non-json",
+        "missing-fields",
+        "invalid-tags",
+        "invalid-availability",
+    ],
 )
 def test_list_products_maps_upstream_failures(handler) -> None:
     client = MallClient("http://mall.test", transport=httpx.MockTransport(handler))

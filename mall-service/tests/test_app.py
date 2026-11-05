@@ -41,6 +41,9 @@ async def test_products_returns_deterministic_typed_catalog(
                 "description": "轻量耐用的日常托特包 / A lightweight, durable everyday tote.",
                 "price_cents": 59000,
                 "currency": "TWD",
+                "category": "bags",
+                "tags": ["everyday", "durable"],
+                "availability": "in_stock",
             },
             {
                 "id": "ceramic-mug",
@@ -48,6 +51,19 @@ async def test_products_returns_deterministic_typed_catalog(
                 "description": "适合咖啡与茶的简约杯款 / A simple mug for coffee or tea.",
                 "price_cents": 39000,
                 "currency": "TWD",
+                "category": "drinkware",
+                "tags": ["coffee", "tea"],
+                "availability": "in_stock",
+            },
+            {
+                "id": "wool-scarf",
+                "name": "羊毛围巾 / Wool Scarf",
+                "description": "适合冬季的保暖围巾 / A warm scarf for winter.",
+                "price_cents": 79000,
+                "currency": "TWD",
+                "category": "accessories",
+                "tags": ["winter", "warm"],
+                "availability": "out_of_stock",
             },
         ]
     }
@@ -62,3 +78,7 @@ async def test_product_prices_are_non_negative_integer_minor_units(
     assert len(items) >= 2
     assert all(type(item["price_cents"]) is int for item in items)
     assert all(item["price_cents"] >= 0 for item in items)
+    assert {item["availability"] for item in items} == {
+        "in_stock",
+        "out_of_stock",
+    }
