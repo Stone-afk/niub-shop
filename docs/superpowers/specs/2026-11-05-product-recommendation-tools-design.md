@@ -91,6 +91,7 @@ The model may refine filters and search again, with at most three search calls p
 - `limit` 默认 5，范围 1–10。
 - `keyword` 和 `category` 去除首尾空白；空字符串等同未提供。
 - 第一版 mock 商品使用同一币种 TWD，价格条件直接按 `price_cents` 比较；跨币种查询留待真实商城搜索 API 处理。
+- 第一版搜索默认只返回查询时 `in_stock` 的商品，避免推荐已知缺货商品；历史卡片仍显示商城当前库存，因此推荐后变为缺货的商品会显示 `out_of_stock`。
 
 输出最多 10 项，只包含模型做推荐所需的可信字段：
 
@@ -127,15 +128,16 @@ The model may refine filters and search again, with at most three search calls p
 - `answer` 去空白后必须非空，并有与现有消息一致的合理长度上限。
 - `product_ids` 最多 10 个，保持模型顺序并去重。
 - 每个 ID 必须出现在本轮至少一次成功的 `search_products` 结果中；否则整次最终提交无效，而不是静默展示虚构商品。
+- 每个 ID 在被工具返回时必须为 `in_stock`；当前 mock 搜索已保证这一点。
 - 若本轮没有搜索，普通非商品对话可以直接返回缓冲文本，商品 ID 固定为空；一旦执行过商品搜索，最终结果必须使用 `submit_product_recommendation`。
 
 The finalization tool does not call Mall. It supplies non-empty prose and up to ten ordered, unique IDs. Every ID must have appeared in a successful search result from this turn. General non-product chat may finish with buffered text and no IDs if no search occurred; after any product search, finalization through this tool is mandatory.
 
 ## Agent 与 Provider 架构 / Agent and Provider Architecture
 
-### 类型化模型事件 / Typed model events
+### 缓冲的模型响应 / Buffered model responses
 
-把当前仅产出字符串的 `ModelStream` 扩展为类型化事件：文本 delta、tool-call delta 和正常完成。Provider 负责组装分片的 tool call 名称与 arguments，并验证 OpenAI-compatible 响应结构；Agent 负责业务级工具选择和参数校验。
+保留当前只产出字符串的 legacy `ModelStream`，并为工具编排增加独立的 buffered `ModelResponse` 接口。Provider 完整消费上游 SSE，组装文本以及分片的 tool call 名称与 arguments，并验证 OpenAI-compatible 响应结构；Agent 负责业务级工具选择和参数校验。这样旧 `/chat` 无需改变，而工具阶段在进入业务状态机前已有完整、可验证的响应。
 
 `ModelMessage` 扩展支持：
 
@@ -143,7 +145,7 @@ The finalization tool does not call Mall. It supplies non-empty prose and up to 
 - 带 `tool_calls` 的 assistant 消息；
 - 带 `tool_call_id` 和工具 JSON 结果的 tool 消息。
 
-Provider 请求可携带 `tools` 和 `tool_choice`。旧的无状态 `/chat` 继续走纯文本兼容入口，外部行为不变；持久化 conversation service 使用新的工具感知入口。
+Provider 的新接口返回 immutable `ModelResponse(content, tool_calls)`，请求可携带 `tools` 和 `tool_choice`。旧的无状态 `/chat` 继续走纯文本兼容入口，外部行为不变；持久化 conversation service 使用新的工具感知入口。
 
 ### `RecommendationAgent`
 
