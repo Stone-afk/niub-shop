@@ -6,6 +6,7 @@ import pytest
 
 from agent_service.app import create_app
 from agent_service.config import LLMConfig
+from agent_service.conversations import ConversationRepository
 from agent_service.providers import (
     ModelMessage,
     ModelProtocolError,
@@ -84,6 +85,28 @@ def make_client(
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
+    )
+
+
+def make_persistent_client(
+    tmp_path: Path,
+    provider: StreamingModelProvider | None = None,
+    *,
+    system_prompt: str | None = "system",
+) -> tuple[httpx.AsyncClient, ConversationRepository]:
+    repository = ConversationRepository(tmp_path / "agent.db")
+    repository.initialize()
+    app = create_app(
+        provider,
+        system_prompt=system_prompt,
+        repository=repository,
+    )
+    return (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ),
+        repository,
     )
 
 
@@ -286,3 +309,151 @@ async def test_unknown_role_returns_422() -> None:
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["body", "messages", 0, "role"]
     assert response.json()["detail"][0]["type"] == "literal_error"
+
+
+@pytest.mark.anyio
+async def test_conversation_list_create_and_detail_hide_user_id(tmp_path: Path) -> None:
+    client, _ = make_persistent_client(tmp_path, RecordingProvider())
+    async with client:
+        assert (await client.get("/conversations")).json() == []
+        created = await client.post("/conversations", json={"user_id": 999})
+        listed = await client.get("/conversations")
+        detail = await client.get(f"/conversations/{created.json()['id']}")
+
+    assert created.status_code == 201
+    assert "user_id" not in created.json()
+    assert listed.json() == [created.json()]
+    assert detail.status_code == 200
+    assert detail.json()["turns"] == []
+    assert "user_id" not in detail.json()
+
+
+@pytest.mark.anyio
+async def test_conversation_detail_maps_missing_and_other_user_to_same_404(
+    tmp_path: Path,
+) -> None:
+    client, repository = make_persistent_client(tmp_path, RecordingProvider())
+    foreign = repository.create_conversation(2)
+    async with client:
+        missing = await client.get("/conversations/missing")
+        hidden = await client.get(f"/conversations/{foreign.id}")
+
+    expected = {
+        "error": {
+            "code": "conversation_not_found",
+            "message": "Conversation was not found",
+        }
+    }
+    assert missing.status_code == hidden.status_code == 404
+    assert missing.json() == hidden.json() == expected
+
+
+@pytest.mark.anyio
+async def test_send_turn_streams_and_persists_completed_answer(tmp_path: Path) -> None:
+    provider = RecordingProvider(("你", "好"))
+    client, repository = make_persistent_client(tmp_path, provider)
+    conversation = repository.create_conversation(1)
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns",
+            json={"content": "  问题  ", "user_id": 2},
+        )
+
+    assert response.status_code == 200
+    assert response.text == (
+        'event: delta\ndata: {"content": "你"}\n\n'
+        'event: delta\ndata: {"content": "好"}\n\n'
+        "event: done\ndata: {}\n\n"
+    )
+    stored = repository.get_conversation(1, conversation.id).turns[0]
+    assert stored.user_content == "问题"
+    assert stored.assistant_content == "你好"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content", ["", "   "])
+async def test_send_turn_rejects_empty_content(tmp_path: Path, content: str) -> None:
+    client, repository = make_persistent_client(tmp_path, RecordingProvider())
+    conversation = repository.create_conversation(1)
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": content}
+        )
+
+    assert response.status_code == 422
+    assert repository.get_conversation(1, conversation.id).turns == ()
+
+
+@pytest.mark.anyio
+async def test_send_turn_maps_open_failure_to_safe_502(tmp_path: Path) -> None:
+    provider = RecordingProvider(
+        open_error=ModelUpstreamError("vendor key must-not-appear")
+    )
+    client, repository = make_persistent_client(tmp_path, provider)
+    conversation = repository.create_conversation(1)
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": "问题"}
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "model_service_unavailable"
+    assert "must-not-appear" not in response.text
+    assert repository.get_conversation(1, conversation.id).turns[0].status == "failed"
+
+
+@pytest.mark.anyio
+async def test_send_turn_emits_safe_error_without_done_on_midstream_failure(
+    tmp_path: Path,
+) -> None:
+    provider = RecordingProvider(("partial",), fail_after_chunks=True)
+    client, repository = make_persistent_client(tmp_path, provider)
+    conversation = repository.create_conversation(1)
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": "问题"}
+        )
+
+    assert response.status_code == 200
+    assert 'event: delta\ndata: {"content": "partial"}\n\n' in response.text
+    assert (
+        'event: error\ndata: {"code": "model_stream_failed", '
+        '"message": "Model stream failed"}\n\n'
+    ) in response.text
+    assert "event: done" not in response.text
+    assert repository.get_conversation(1, conversation.id).turns[0].status == "failed"
+
+
+@pytest.mark.anyio
+async def test_send_turn_returns_409_when_conversation_is_busy(tmp_path: Path) -> None:
+    client, repository = make_persistent_client(tmp_path, RecordingProvider())
+    conversation = repository.create_conversation(1)
+    repository.create_turn(1, conversation.id, "进行中")
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": "新问题"}
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conversation_busy"
+
+
+@pytest.mark.anyio
+async def test_retry_streams_on_same_failed_turn(tmp_path: Path) -> None:
+    client, repository = make_persistent_client(
+        tmp_path, RecordingProvider(("重试成功",))
+    )
+    conversation = repository.create_conversation(1)
+    turn = repository.create_turn(1, conversation.id, "原问题")
+    repository.fail_turn(1, conversation.id, turn.id, "failed")
+    async with client:
+        response = await client.post(
+            f"/conversations/{conversation.id}/turns/{turn.id}/retry"
+        )
+
+    assert response.status_code == 200
+    assert "event: done" in response.text
+    turns = repository.get_conversation(1, conversation.id).turns
+    assert len(turns) == 1
+    assert turns[0].id == turn.id
+    assert turns[0].status == "completed"
