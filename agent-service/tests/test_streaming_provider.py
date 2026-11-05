@@ -8,6 +8,8 @@ import pytest
 from agent_service.config import LLMConfig
 from agent_service.providers import (
     ModelProtocolError,
+    ModelResponse,
+    ModelToolCall,
     ModelUpstreamError,
     OpenAICompatibleProvider,
 )
@@ -74,6 +76,23 @@ class FailingCloseStream(ChunkedStream):
         raise RuntimeError("response close failed")
 
 
+class ReadErrorStream(ChunkedStream):
+    async def __aiter__(self):
+        raise httpx.ReadError(f"read failed {SECRET}")
+        yield b""  # pragma: no cover
+
+
+class BlockingBodyStream(ChunkedStream):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.started = anyio.Event()
+
+    async def __aiter__(self):
+        self.started.set()
+        await anyio.sleep_forever()
+        yield b""  # pragma: no cover
+
+
 def config() -> LLMConfig:
     return LLMConfig(
         provider="openai-compatible",
@@ -91,6 +110,191 @@ def sse_response(stream: ChunkedStream) -> httpx.Response:
         headers={"content-type": "text/event-stream; charset=utf-8"},
         stream=stream,
     )
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_products",
+            "description": "Search products",
+            "parameters": {"type": "object", "additionalProperties": False},
+        },
+    }
+]
+
+
+@pytest.mark.anyio
+async def test_complete_response_posts_tools_and_buffers_split_text() -> None:
+    captured: dict[str, object] = {}
+    upstream = (
+        b'data: {"choices":[{"delta":{"content":"\xe4\xbd\xa0"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"\xe5\xa5\xbd"}}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    stream = ChunkedStream([upstream[:17], upstream[17:61], upstream[61:]])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        captured["authorization"] = request.headers.get("authorization")
+        return sse_response(stream)
+
+    transport = TrackingTransport(handler)
+    result = await OpenAICompatibleProvider(
+        config(), transport=transport
+    ).complete_response(MESSAGES, tools=TOOLS, tool_choice="auto")
+
+    assert result == ModelResponse(content="你好", tool_calls=())
+    assert captured == {
+        "authorization": f"Bearer {SECRET}",
+        "body": {
+            "model": "example-chat",
+            "messages": MESSAGES,
+            "stream": True,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        },
+    }
+    assert stream.closed
+    assert transport.closed
+
+
+@pytest.mark.anyio
+async def test_interleaved_tool_call_chunks_are_assembled_by_index() -> None:
+    stream = ChunkedStream(
+        [
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-0","type":"function","function":{"name":"search_products","arguments":"{\\"keyword\\":"}}]}}]}\n\n',
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call-1","type":"function","function":{"name":"search_products","arguments":"{\\"category\\":"}}]}}]}\n\n',
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"coffee\\"}"}}]}}]}\n\n',
+            b'data: {"choices":[{"delta":{"content":"thinking","tool_calls":[{"index":1,"function":{"arguments":"\\"bags\\"}"}}]}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    transport = TrackingTransport(lambda _request: sse_response(stream))
+
+    result = await OpenAICompatibleProvider(
+        config(), transport=transport
+    ).complete_response(MESSAGES, tools=TOOLS)
+
+    assert result == ModelResponse(
+        content="thinking",
+        tool_calls=(
+            ModelToolCall(
+                id="call-0",
+                name="search_products",
+                arguments='{"keyword":"coffee"}',
+            ),
+            ModelToolCall(
+                id="call-1",
+                name="search_products",
+                arguments='{"category":"bags"}',
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"search_products","arguments":"{}"}}]}}]}\n\n'],
+        [b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"id","function":{"arguments":"{}"}}]}}]}\n\n'],
+        [
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"search_products","arguments":""}}]}}]}\n\n',
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"b","function":{"name":"search_products","arguments":"{}"}}]}}]}\n\n',
+        ],
+    ],
+    ids=["missing-id", "missing-name", "conflicting-metadata"],
+)
+@pytest.mark.anyio
+async def test_complete_response_rejects_invalid_tool_call_metadata(
+    events: list[bytes],
+) -> None:
+    stream = ChunkedStream([*events, b"data: [DONE]\n\n"])
+    transport = TrackingTransport(lambda _request: sse_response(stream))
+
+    with pytest.raises(ModelProtocolError, match="invalid data") as caught:
+        await OpenAICompatibleProvider(
+            config(), transport=transport
+        ).complete_response(MESSAGES, tools=TOOLS)
+
+    assert SECRET not in str(caught.value)
+    assert stream.closed
+    assert transport.closed
+
+
+@pytest.mark.anyio
+async def test_complete_response_preserves_invalid_arguments_for_agent_validation() -> None:
+    stream = ChunkedStream(
+        [
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"id","function":{"name":"search_products","arguments":"not-json"}}]}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    transport = TrackingTransport(lambda _request: sse_response(stream))
+
+    result = await OpenAICompatibleProvider(
+        config(), transport=transport
+    ).complete_response(MESSAGES, tools=TOOLS)
+
+    assert result.tool_calls[0].arguments == "not-json"
+
+
+@pytest.mark.anyio
+async def test_complete_response_rejects_premature_eof_and_closes() -> None:
+    stream = ChunkedStream(
+        [b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n']
+    )
+    transport = TrackingTransport(lambda _request: sse_response(stream))
+
+    with pytest.raises(ModelProtocolError, match="ended unexpectedly"):
+        await OpenAICompatibleProvider(
+            config(), transport=transport
+        ).complete_response(MESSAGES, tools=TOOLS)
+
+    assert stream.closed
+    assert transport.closed
+
+
+@pytest.mark.anyio
+async def test_complete_response_maps_invalid_json_and_read_error_safely() -> None:
+    invalid_stream = ChunkedStream([b"data: not-json\n\n"])
+    invalid_transport = TrackingTransport(
+        lambda _request: sse_response(invalid_stream)
+    )
+
+    with pytest.raises(ModelProtocolError, match="invalid data"):
+        await OpenAICompatibleProvider(
+            config(), transport=invalid_transport
+        ).complete_response(MESSAGES, tools=TOOLS)
+
+    read_stream = ReadErrorStream([])
+    read_transport = TrackingTransport(lambda _request: sse_response(read_stream))
+    with pytest.raises(ModelProtocolError, match="stream failed") as caught:
+        await OpenAICompatibleProvider(
+            config(), transport=read_transport
+        ).complete_response(MESSAGES, tools=TOOLS)
+
+    assert SECRET not in str(caught.value)
+    assert invalid_stream.closed and invalid_transport.closed
+    assert read_stream.closed and read_transport.closed
+
+
+@pytest.mark.anyio
+async def test_complete_response_cancellation_closes_response_and_client() -> None:
+    body_stream = BlockingBodyStream()
+    transport = TrackingTransport(lambda _request: sse_response(body_stream))
+    provider = OpenAICompatibleProvider(config(), transport=transport)
+
+    async def complete() -> None:
+        await provider.complete_response(MESSAGES, tools=TOOLS)
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(complete)
+        await body_stream.started.wait()
+        task_group.cancel_scope.cancel()
+
+    assert body_stream.closed
+    assert transport.closed
 
 
 @pytest.mark.anyio
