@@ -1,5 +1,6 @@
 """FastAPI application for the agent service."""
 
+import asyncio
 import json
 from typing import Annotated
 from typing import Literal
@@ -18,6 +19,7 @@ FIXED_REPLY_CHUNKS = (
     "\n这是一个固定的 SSE 流式回复演示。",
     " / This is a fixed SSE streaming demo.",
 )
+DEMO_CHUNK_DELAY_SECONDS = 0.03
 
 
 class ChatMessage(BaseModel):
@@ -30,9 +32,11 @@ class ChatRequest(BaseModel):
 
 
 async def fixed_reply_events():
-    for chunk in FIXED_REPLY_CHUNKS:
+    for index, chunk in enumerate(FIXED_REPLY_CHUNKS):
         payload = json.dumps({"content": chunk}, ensure_ascii=False)
         yield f"event: delta\ndata: {payload}\n\n"
+        if index < len(FIXED_REPLY_CHUNKS) - 1:
+            await asyncio.sleep(DEMO_CHUNK_DELAY_SECONDS)
     yield "event: done\ndata: {}\n\n"
 
 

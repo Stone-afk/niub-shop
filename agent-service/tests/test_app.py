@@ -1,3 +1,5 @@
+from time import perf_counter
+
 import httpx
 import pytest
 
@@ -85,6 +87,20 @@ async def test_chat_accepts_complete_history() -> None:
 
     assert response.status_code == 200
     assert response.text.endswith("event: done\ndata: {}\n\n")
+
+
+@pytest.mark.anyio
+async def test_chat_paces_demo_delta_events() -> None:
+    async with await make_client(RecordingMallClient()) as client:
+        started_at = perf_counter()
+        response = await client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+        elapsed = perf_counter() - started_at
+
+    assert response.status_code == 200
+    assert elapsed >= 0.08
 
 
 @pytest.mark.anyio

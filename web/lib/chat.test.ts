@@ -116,4 +116,19 @@ describe("streamChat", () => {
       "Chat request failed",
     );
   });
+
+  it.each([
+    ["an empty stream", ""],
+    [
+      "a partial reply",
+      'event: delta\ndata: {"content":"只有一部分"}\n\n',
+    ],
+    ["an unfinished frame", 'event: delta\ndata: {"content":"未完成"}'],
+  ])("rejects premature EOF from %s", async (_scenario, stream) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([stream])));
+
+    await expect(streamChat(HISTORY, () => undefined)).rejects.toThrow(
+      "Chat stream ended unexpectedly",
+    );
+  });
 });

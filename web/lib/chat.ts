@@ -76,6 +76,6 @@ export async function streamChat(
       boundary = buffer.indexOf("\n\n");
     }
 
-    if (done) return;
+    if (done) throw new Error("Chat stream ended unexpectedly");
   }
 }

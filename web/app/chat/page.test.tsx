@@ -130,4 +130,37 @@ describe("multi-turn chat page", () => {
       ],
     });
   });
+
+  it("recovers from premature EOF without sending an empty assistant turn", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+      .mockResolvedValueOnce(chatResponse(["恢复成功"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<ChatPage />);
+    const input = screen.getByLabelText("消息 / Message");
+
+    await user.type(input, "第一问");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+    expect(
+      await screen.findByRole("alert", {
+        name: "回复失败，请稍后重试 / Reply failed, please try again",
+      }),
+    ).toBeVisible();
+
+    await user.type(input, "第二问");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+    expect(await screen.findByText("恢复成功")).toBeVisible();
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({
+      messages: [
+        { role: "user", content: "第一问" },
+        { role: "user", content: "第二问" },
+      ],
+    });
+  });
 });
