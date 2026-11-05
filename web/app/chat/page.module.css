@@ -8,8 +8,8 @@
 
 .shell {
   display: grid;
-  grid-template-rows: auto minmax(360px, 1fr) auto auto;
-  width: min(920px, 100%);
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1160px, 100%);
   min-height: calc(100vh - 64px);
   margin: 0 auto;
   overflow: hidden;
@@ -23,6 +23,94 @@
 .header {
   padding: 28px 32px 24px;
   border-bottom: 1px solid #d8d2c6;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.sidebar {
+  min-width: 0;
+  padding: 24px 18px;
+  overflow-y: auto;
+  border-right: 1px solid #d8d2c6;
+  background: rgba(248, 246, 240, 0.78);
+}
+
+.sidebarHeader {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.sidebarHeader h2 {
+  margin: 0;
+  color: #27372f;
+  font-size: 1rem;
+}
+
+.sidebarHeader button,
+.failedMessage button {
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid #c96e36;
+  border-radius: 10px;
+  background: #fff8f0;
+  color: #8b3f1d;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sidebarState {
+  margin: 18px 4px;
+  color: #6a756d;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.historyList {
+  display: grid;
+  gap: 8px;
+}
+
+.historyItem,
+.selectedHistory {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 13px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: #27372f;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.historyItem:hover {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.selectedHistory {
+  border-color: #d7a17d;
+  background: #fff7ef;
+}
+
+.historyItem span,
+.selectedHistory span {
+  color: #78827b;
+  font-size: 0.76rem;
+}
+
+.chatPanel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 .backLink {
@@ -83,9 +171,13 @@
   flex-direction: column;
   gap: 18px;
   min-height: 0;
-  max-height: 58vh;
+  max-height: 62vh;
   padding: 30px 32px;
   overflow-y: auto;
+}
+
+.turn {
+  display: contents;
 }
 
 .empty {
@@ -147,6 +239,22 @@
   border-bottom-left-radius: 5px;
   background: #fffdf8;
   color: #27372f;
+}
+
+.failedMessage {
+  align-self: flex-start;
+}
+
+.failedMessage p {
+  margin-bottom: 10px;
+  border: 1px solid #e3b6a8;
+  background: #fff5f1;
+  color: #8c2f20;
+}
+
+.failedMessage button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .error {
@@ -223,6 +331,22 @@
     min-height: 100vh;
     border: 0;
     border-radius: 0;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    max-height: 240px;
+    border-right: 0;
+    border-bottom: 1px solid #d8d2c6;
+  }
+
+  .historyList {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(180px, 74%);
+    overflow-x: auto;
   }
 
   .header,
