@@ -8,14 +8,14 @@ Add single-user local SQLite conversation storage to `agent-service`, then chang
 
 ## 已确认范围 / Confirmed Scope
 
-- 单用户本地模式；不增加登录、用户表或浏览器身份隔离。
+- 单用户本地模式；暂不增加登录或浏览器身份隔离，但所有会话归属固定 `user_id = 1`，为后续认证预留数据边界。
 - 历史会话可以继续发送消息，并延续原来的模型上下文。
 - 不完整的流式回复不作为正常 Agent 消息保存；本轮显示“回复失败，可重试”。
 - 第一版不提供删除、重命名或搜索。
 - 会话标题由第一条用户消息自动生成并截断。
 - 会话按最近活动时间倒序排列。
 
-- Single-user local mode, with no authentication, user table, or browser identity.
+- Single-user local mode without authentication or browser identity. Every conversation belongs to fixed `user_id = 1`, preserving an ownership boundary for later authentication.
 - A historical conversation can be continued with its prior model context.
 - A partial streamed answer is never stored as a successful Agent message; the turn becomes “failed, retry available.”
 - Version one excludes deletion, renaming, and search.
@@ -43,6 +43,7 @@ Rejected approaches:
 ### `conversations`
 
 - `id TEXT PRIMARY KEY`：由服务端生成的 UUID。
+- `user_id INTEGER NOT NULL`：第一版固定为 `1`；建立 `(user_id, updated_at)` 索引。
 - `title TEXT NOT NULL`：新会话初始为“新对话 / New conversation”，第一条用户消息写入时自动更新。
 - `created_at TEXT NOT NULL`：UTC ISO-8601。
 - `updated_at TEXT NOT NULL`：创建轮次、成功、失败或重试时更新。
@@ -61,21 +62,25 @@ Rejected approaches:
 
 Each conversation allows at most one `pending` turn, enforced with a partial unique index. At service startup, stale `pending` turns become `failed`, covering process crashes. Version one supports exactly one `agent-service` worker; `uvicorn --workers > 1` against this local database is unsupported. Development `--reload` still runs one serving worker and relies on Uvicorn graceful shutdown before replacement.
 
+`agent-service` 定义单一的当前用户解析边界，第一版始终返回常量 `1`。所有 conversation 的创建、列表、详情、发送和重试查询都必须同时按 `conversation_id` 与 `user_id` 限定。客户端请求和响应均不允许指定或覆盖 `user_id`。未来接入登录系统时，用认证结果替换这个解析边界，不改变 repository 与表结构。
+
+`agent-service` owns a single current-user resolution boundary that always returns constant `1` in version one. Every create, list, detail, send, and retry operation is scoped by both conversation ID and user ID. Clients cannot supply or override `user_id`. Future login replaces this resolver with authenticated identity without redesigning the repository or schema.
+
 ## Agent API
 
 保留现有 `POST /chat` 作为旧的无状态兼容接口，商城首页和既有调用不会被本功能破坏。持久化聊天使用以下新接口：
 
 Keep the existing stateless `POST /chat` for backward compatibility. Persisted chat uses these new endpoints:
 
-- `GET /conversations`：返回会话摘要列表 `{id, title, created_at, updated_at, last_turn_status}`。
+- `GET /conversations`：返回固定用户 `1` 的会话摘要列表 `{id, title, created_at, updated_at, last_turn_status}`。
 - `POST /conversations`：创建空会话并返回摘要。Web 只在新会话第一次发送消息时调用，避免点击“新对话”后留下空记录。
 - `GET /conversations/{conversation_id}`：返回会话及全部 turns；不存在返回稳定 404。
 - `POST /conversations/{conversation_id}/turns`，请求 `{content}`：创建 `pending` turn，打开模型上游，并返回现有 named SSE `delta` / `done` 协议。
 - `POST /conversations/{conversation_id}/turns/{turn_id}/retry`：仅允许重试该会话最新且状态为 `failed` 的 turn；成功和失败使用同一 SSE/错误约定。
 
-如果 conversation 已有 `pending` turn，新的发送或重试返回 409。输入继续使用 Pydantic 去空白和非空校验。
+如果 conversation 已有 `pending` turn，新的发送或重试返回 409。输入继续使用 Pydantic 去空白和非空校验。任何 conversation 不属于当前固定用户时，对外统一表现为 404，避免未来接入登录后泄露其他用户资源是否存在。
 
-If a conversation already has a pending turn, send or retry returns 409. Input retains Pydantic trimming and non-empty validation.
+If a conversation already has a pending turn, send or retry returns 409. Input retains Pydantic trimming and non-empty validation. A conversation outside the resolved user scope returns 404, avoiding cross-user existence disclosure after authentication is introduced.
 
 ## 模型上下文 / Model Context
 
@@ -125,7 +130,7 @@ Next.js adds same-origin proxies for the conversation API. The page loads and se
 
 ## 测试 / Verification
 
-- Repository 测试：schema、排序、完整上下文、并发 pending 约束、失败、重试和重启恢复。
+- Repository 测试：schema、固定 `user_id = 1` 的归属过滤、排序、完整上下文、并发 pending 约束、失败、重试和重启恢复。
 - Agent API 测试：列表/详情/404/409、SSE 成功、打开失败、中途失败、取消以及不保存部分内容。
 - Web 测试：加载列表、选择历史、新建会话、继续对话、失败重试和会话切换时的流归属。
 - BFF 测试：路径、JSON 状态和 SSE 透明转发。
@@ -133,6 +138,6 @@ Next.js adds same-origin proxies for the conversation API. The page loads and se
 
 ## 非目标 / Non-goals
 
-用户认证、多用户隔离、云数据库、跨设备同步服务、删除、重命名、搜索、分页、附件、工具调用、分支对话和供应商级重试均不在第一版范围内。
+用户认证、多用户登录流程、云数据库、跨设备同步服务、删除、重命名、搜索、分页、附件、工具调用、分支对话和供应商级重试均不在第一版范围内。数据层仍保留 `user_id` 归属约束。
 
-Authentication, multi-user isolation, cloud storage, deletion, renaming, search, pagination, attachments, tools, conversation branching, and provider-level retries are outside version one.
+Authentication, multi-user login flows, cloud storage, deletion, renaming, search, pagination, attachments, tools, conversation branching, and provider-level retries are outside version one. The persistence layer still retains `user_id` ownership constraints.
