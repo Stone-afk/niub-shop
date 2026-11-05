@@ -114,7 +114,13 @@ async def _search_products(
     state = run_context.context
     async with state.search_lock:
         if state.found_products:
-            raise RecommendationInvalid("Recommendation response is invalid")
+            return json.dumps(
+                {
+                    "items": [],
+                    "note": "Products were already found. Submit the recommendation now.",
+                },
+                ensure_ascii=False,
+            )
         if state.search_count >= state.max_search_calls:
             raise ToolLoopExceeded("Product search limit exceeded")
         try:
