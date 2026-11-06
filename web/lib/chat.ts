@@ -17,7 +17,7 @@ function readField(line: string, field: string): string | null {
 
 
 export interface ConsumeChatStreamOptions {
-  onRecommendations?: (ids: string[]) => void;
+  onRecommendations?: (ids: string[], sources: string[]) => void;
   requireRecommendations?: boolean;
   requestError?: string;
 }
@@ -51,7 +51,10 @@ function handleFrame(
   if (event === "recommendations") {
     if (state.seenRecommendations) throw new Error("Invalid chat stream");
     try {
-      const payload = JSON.parse(data) as { product_ids?: unknown };
+      const payload = JSON.parse(data) as {
+        product_ids?: unknown;
+        product_sources?: unknown;
+      };
       if (
         !Array.isArray(payload.product_ids) ||
         payload.product_ids.some((id) => typeof id !== "string" || !id) ||
@@ -60,7 +63,10 @@ function handleFrame(
         throw new Error("invalid products");
       }
       state.seenRecommendations = true;
-      options.onRecommendations?.([...payload.product_ids]);
+      const sources = Array.isArray(payload.product_sources)
+        ? payload.product_sources.filter((source): source is string => typeof source === "string")
+        : [];
+      options.onRecommendations?.([...payload.product_ids], sources);
       return false;
     } catch {
       throw new Error("Invalid chat stream");

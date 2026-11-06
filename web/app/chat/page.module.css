@@ -268,6 +268,16 @@
   line-height: 1.4;
 }
 
+.sponsored {
+  align-self: flex-start;
+  border-radius: 999px;
+  background: #f5e0b7;
+  color: #8a4b12;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.25rem 0.55rem;
+}
+
 .productCard p {
   margin: 0;
   color: #657068;

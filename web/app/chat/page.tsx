@@ -20,6 +20,7 @@ type StreamView = {
   assistantContent: string;
   showUser: boolean;
   productIds: string[];
+  productSources: string[];
 };
 
 function formatPrice(product: Product): string {
@@ -34,10 +35,12 @@ function formatPrice(product: Product): string {
 
 function ProductCards({
   ids,
+  sources = [],
   catalog,
   catalogError,
 }: {
   ids: string[];
+  sources?: string[];
   catalog: Map<string, Product> | null;
   catalogError: boolean;
 }) {
@@ -50,7 +53,7 @@ function ProductCards({
   }
   return (
     <ul className={styles.productGrid} aria-label="推荐商品 / Recommended products">
-      {ids.map((id) => {
+      {ids.map((id, index) => {
         const product = catalog.get(id);
         if (!product) {
           return (
@@ -63,6 +66,9 @@ function ProductCards({
         return (
           <li className={styles.productCard} key={id}>
             <strong>{product.name}</strong>
+            {sources[index] === "sponsored" && (
+              <span className={styles.sponsored}>广告 / Sponsored</span>
+            )}
             <span className={styles.productPrice}>{formatPrice(product)}</span>
             <p>{product.description}</p>
             <span
@@ -175,11 +181,15 @@ export default function ChatPage() {
     });
   }
 
-  function setRecommendations(conversationId: string, productIds: string[]) {
+  function setRecommendations(
+    conversationId: string,
+    productIds: string[],
+    productSources: string[],
+  ) {
     setStreams((current) => {
       const stream = current[conversationId];
       if (!stream) return current;
-      return { ...current, [conversationId]: { ...stream, productIds } };
+      return { ...current, [conversationId]: { ...stream, productIds, productSources } };
     });
   }
 
@@ -207,13 +217,19 @@ export default function ChatPage() {
       const targetId = conversationId;
       setStreams((current) => ({
         ...current,
-        [targetId]: { userContent: content, assistantContent: "", showUser: true, productIds: [] },
+        [targetId]: {
+          userContent: content,
+          assistantContent: "",
+          showUser: true,
+          productIds: [],
+          productSources: [],
+        },
       }));
       await streamConversationTurn(
         targetId,
         content,
         (delta) => appendDelta(targetId, delta),
-        (ids) => setRecommendations(targetId, ids),
+        (ids, sources) => setRecommendations(targetId, ids, sources),
       );
     } catch {
       const errorKey = conversationId ?? NEW_CHAT_KEY;
@@ -244,14 +260,20 @@ export default function ChatPage() {
     setOperationErrors((current) => ({ ...current, [conversationId]: false }));
     setStreams((current) => ({
       ...current,
-      [conversationId]: { userContent: "", assistantContent: "", showUser: false, productIds: [] },
+      [conversationId]: {
+        userContent: "",
+        assistantContent: "",
+        showUser: false,
+        productIds: [],
+        productSources: [],
+      },
     }));
     try {
       await retryConversationTurn(
         conversationId,
         turnId,
         (delta) => appendDelta(conversationId, delta),
-        (ids) => setRecommendations(conversationId, ids),
+        (ids, sources) => setRecommendations(conversationId, ids, sources),
       );
     } catch {
       setOperationErrors((current) => ({ ...current, [conversationId]: true }));
@@ -347,6 +369,7 @@ export default function ChatPage() {
                       </article>
                       <ProductCards
                         ids={turn.recommended_product_ids ?? []}
+                        sources={turn.recommended_product_sources ?? []}
                         catalog={catalog}
                         catalogError={catalogError}
                       />
@@ -379,6 +402,7 @@ export default function ChatPage() {
                   </article>
                   <ProductCards
                     ids={stream.productIds}
+                    sources={stream.productSources}
                     catalog={catalog}
                     catalogError={catalogError}
                   />

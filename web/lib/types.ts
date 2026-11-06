@@ -31,6 +31,7 @@ export interface ConversationTurn {
   created_at: string;
   updated_at: string;
   recommended_product_ids: string[];
+  recommended_product_sources?: string[];
 }
 
 export interface ConversationSummary {
