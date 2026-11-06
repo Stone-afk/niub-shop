@@ -29,6 +29,7 @@ from .mall_client import MallServiceUnavailable
 from .product_tools import ProductSearchFilters, ProductSearchTool, SearchSort
 from .providers import ModelMessage, ModelProtocolError, ModelUpstreamError
 from .prompt_loader import load_prompt
+from .profile_provider import AgentProfileProvider
 
 
 DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH = (
@@ -66,7 +67,7 @@ class _RecommendationSubmission(BaseModel):
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20000)
     ]
     product_ids: Annotated[
-        list[Annotated[str, StringConstraints(min_length=1)]], Field(max_length=5)
+        list[Annotated[str, StringConstraints(min_length=1)]], Field(max_length=3)
     ]
 
 
@@ -77,6 +78,7 @@ class RecommendationRunContext:
     product_tool: ProductSearchTool
     max_search_calls: int
     source_tool: Any | None = None
+    profile_provider: AgentProfileProvider | None = None
     user_id: int = 1
     search_count: int = 0
     searched: bool = False
@@ -85,6 +87,7 @@ class RecommendationRunContext:
     candidate_sources: dict[str, str] = field(default_factory=dict)
     purchased_ids: set[str] = field(default_factory=set)
     context_loaded: bool = False
+    source_status: dict[str, str] = field(default_factory=dict)
     submission: RecommendationResult | None = None
     search_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -167,11 +170,85 @@ async def _search_products(
 async def _get_user_context(run_context: RunContextWrapper[RecommendationRunContext]) -> str:
     source = run_context.context.source_tool
     if source is None:
-        raise MallServiceUnavailable("Mall service is unavailable")
-    context = await source.get_user_context(run_context.context.user_id)
+        run_context.context.context_loaded = True
+        return json.dumps(
+            {
+                "available": False,
+                "error": "not_configured",
+                "browsing": [],
+                "orders": [],
+                "cart": [],
+            },
+            ensure_ascii=False,
+        )
+    try:
+        context = await source.get_user_context(run_context.context.user_id)
+    except MallServiceUnavailable:
+        run_context.context.context_loaded = True
+        run_context.context.source_status["user_context"] = "unavailable"
+        return json.dumps(
+            {
+                "available": False,
+                "error": "source_unavailable",
+                "browsing": [],
+                "orders": [],
+                "cart": [],
+            },
+            ensure_ascii=False,
+        )
     run_context.context.purchased_ids.update(context.purchased_product_ids)
     run_context.context.context_loaded = True
+    run_context.context.source_status["user_context"] = (
+        "available" if context.available else "unavailable"
+    )
     return json.dumps(asdict(context), ensure_ascii=False)
+
+
+async def _get_agent_profile(
+    run_context: RunContextWrapper[RecommendationRunContext],
+) -> str:
+    provider = run_context.context.profile_provider
+    if provider is None:
+        return json.dumps(
+            {"source": "agent", "available": False, "error": "not_configured"},
+            ensure_ascii=False,
+        )
+    profile = provider.get_profile(run_context.context.user_id)
+    run_context.context.source_status["agent_profile"] = (
+        "available" if profile.available else "unavailable"
+    )
+    return json.dumps(asdict(profile), ensure_ascii=False)
+
+
+async def _get_external_profile(
+    run_context: RunContextWrapper[RecommendationRunContext],
+) -> str:
+    source = run_context.context.source_tool
+    if source is None or not hasattr(source, "get_external_profile"):
+        return json.dumps(
+            {
+                "source": "recommendation-platform",
+                "available": False,
+                "error": "not_configured",
+            },
+            ensure_ascii=False,
+        )
+    try:
+        profile = await source.get_external_profile(run_context.context.user_id)
+    except MallServiceUnavailable:
+        run_context.context.source_status["external_profile"] = "unavailable"
+        return json.dumps(
+            {
+                "source": "recommendation-platform",
+                "available": False,
+                "error": "source_unavailable",
+            },
+            ensure_ascii=False,
+        )
+    run_context.context.source_status["external_profile"] = (
+        "available" if profile.available else "unavailable"
+    )
+    return json.dumps(asdict(profile), ensure_ascii=False)
 
 
 async def _get_source_recommendations(
@@ -184,18 +261,31 @@ async def _get_source_recommendations(
         raise MallServiceUnavailable("Mall service is unavailable")
     if not run_context.context.context_loaded:
         await _get_user_context(run_context)
-    result = (
-        await source.get_ad_recommendations(run_context.context.user_id)
-        if sponsored
-        else await source.get_product_recommendations(run_context.context.user_id)
-    )
+    try:
+        result = (
+            await source.get_ad_recommendations(run_context.context.user_id)
+            if sponsored
+            else await source.get_product_recommendations(run_context.context.user_id)
+        )
+    except MallServiceUnavailable:
+        source_name = "sponsored" if sponsored else "organic"
+        run_context.context.searched = True
+        run_context.context.source_status[f"{source_name}_recommendations"] = "unavailable"
+        return json.dumps(
+            {"source": source_name, "available": False, "items": []},
+            ensure_ascii=False,
+        )
     run_context.context.searched = True
     items = [item for item in result.items if item.id not in run_context.context.purchased_ids]
     for item in items:
         run_context.context.candidate_ids.add(item.id)
         run_context.context.candidate_sources[item.id] = result.source
     return json.dumps(
-        {"source": result.source, "items": [asdict(item) for item in items]},
+        {
+            "source": result.source,
+            "available": True,
+            "items": [asdict(item) for item in items],
+        },
         ensure_ascii=False,
     )
 
@@ -231,7 +321,7 @@ async def _submit_product_recommendation(
         for product_id in deduplicated_ids
     )
     sponsored_count = product_sources.count("sponsored")
-    if sponsored_count > 2:
+    if sponsored_count > 1:
         raise RecommendationInvalid("Recommendation response is invalid")
     state.submission = RecommendationResult(
         answer=submission.answer,
@@ -272,7 +362,7 @@ _SUBMIT_RECOMMENDATION_SCHEMA: dict[str, object] = {
         "product_ids": {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
-            "maxItems": 5,
+            "maxItems": 3,
         },
     },
     "required": ["answer", "product_ids"],
@@ -314,6 +404,7 @@ class RecommendationAgent:
             DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH
         ),
         user_id: int = 1,
+        profile_provider: AgentProfileProvider | None = None,
     ) -> None:
         if max_search_calls < 0:
             raise ValueError("max_search_calls must be non-negative")
@@ -327,6 +418,7 @@ class RecommendationAgent:
             )
         ) else None
         self._user_id = user_id
+        self._profile_provider = profile_provider or AgentProfileProvider()
         self._max_search_calls = max_search_calls
         self.model_name = model_name or str(
             getattr(model, "model", type(model).__name__)
@@ -355,6 +447,20 @@ class RecommendationAgent:
         self._tools = [search_tool, submit_tool]
         if self._source_tool is not None:
             self._tools[0:0] = [
+                FunctionTool(
+                    name="get_agent_profile",
+                    description="Load the user profile maintained by the Agent service.",
+                    params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                    on_invoke_tool=lambda context, _arguments: _get_agent_profile(context),
+                    strict_json_schema=True,
+                ),
+                FunctionTool(
+                    name="get_external_profile",
+                    description="Load the profile from the external recommendation platform.",
+                    params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                    on_invoke_tool=lambda context, _arguments: _get_external_profile(context),
+                    strict_json_schema=True,
+                ),
                 FunctionTool(
                     name="get_user_context",
                     description="Load browsing history, orders, cart, and user profile.",
@@ -401,6 +507,7 @@ class RecommendationAgent:
             product_tool=self._product_tool,
             max_search_calls=self._max_search_calls,
             source_tool=self._source_tool,
+            profile_provider=self._profile_provider,
             user_id=self._user_id,
         )
         try:

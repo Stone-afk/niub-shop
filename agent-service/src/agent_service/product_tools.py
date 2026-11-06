@@ -103,6 +103,9 @@ class MallProductSearchTool:
     async def get_user_context(self, user_id: int):
         return await anyio.to_thread.run_sync(self._client.get_user_context, user_id)
 
+    async def get_external_profile(self, user_id: int):
+        return await anyio.to_thread.run_sync(self._client.get_external_profile, user_id)
+
     async def get_product_recommendations(self, user_id: int):
         return await anyio.to_thread.run_sync(self._client.get_recommendations, user_id)
 

@@ -57,7 +57,14 @@ class RecordingProductTool:
 
 class SourceProductTool(RecordingProductTool):
     async def get_user_context(self, user_id: int):
-        return UserContextData(user_id, (), ("purchased",), (), {"favorite": "coffee"})
+        return UserContextData(
+            user_id,
+            True,
+            False,
+            (),
+            ({"product_id": "purchased", "status": "completed"},),
+            (),
+        )
 
     async def get_product_recommendations(self, user_id: int):
         return CandidateProducts("organic", tuple(item(str(i)) for i in range(1, 5)))
@@ -98,7 +105,7 @@ async def test_agent_combines_context_organic_and_sponsored_candidates() -> None
             [
                 function_call(
                     "submit_product_recommendation",
-                    {"answer": "综合推荐", "product_ids": ["1", "2", "3", "4", "5"]},
+                    {"answer": "综合推荐", "product_ids": ["1", "2", "5"]},
                     call_id="submit",
                 )
             ],
@@ -107,8 +114,8 @@ async def test_agent_combines_context_organic_and_sponsored_candidates() -> None
 
     result = await RecommendationAgent(model, SourceProductTool()).generate([])
 
-    assert result.product_ids == ("1", "2", "3", "4", "5")
-    assert result.product_sources == ("organic", "organic", "organic", "organic", "sponsored")
+    assert result.product_ids == ("1", "2", "5")
+    assert result.product_sources == ("organic", "organic", "sponsored")
     assert "get_ad_recommendations" in [tool.name for tool in model.first_call.tools]
 
 

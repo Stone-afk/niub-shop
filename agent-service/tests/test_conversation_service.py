@@ -169,6 +169,30 @@ async def test_defensively_rejects_invalid_agent_results(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "result",
+    [
+        RecommendationResult("answer", ("one", "two", "three", "four")),
+        RecommendationResult(
+            "answer",
+            ("organic", "ad-one", "ad-two"),
+            ("organic", "sponsored", "sponsored"),
+        ),
+    ],
+)
+async def test_rejects_bounded_recommendation_violations(
+    tmp_path: Path, result: RecommendationResult
+) -> None:
+    repository = make_repository(tmp_path)
+    conversation = repository.create_conversation(1)
+
+    with pytest.raises(RecommendationInvalid):
+        await ConversationService(
+            repository, FakeRecommendationAgent(result), None
+        ).open_turn(1, conversation.id, "问题")
+
+
+@pytest.mark.anyio
 async def test_early_consumer_close_marks_turn_failed_without_products(
     tmp_path: Path,
 ) -> None:

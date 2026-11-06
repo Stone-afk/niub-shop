@@ -1,7 +1,7 @@
 """Validated HTTP client for the mall service."""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -29,10 +29,31 @@ class ProductData:
 @dataclass(frozen=True)
 class UserContextData:
     user_id: int
-    browsing_product_ids: tuple[str, ...]
-    purchased_product_ids: tuple[str, ...]
-    cart_product_ids: tuple[str, ...]
-    profile: dict[str, str]
+    available: bool
+    is_new_user: bool
+    browsing: tuple[dict[str, Any], ...]
+    orders: tuple[dict[str, Any], ...]
+    cart: tuple[dict[str, Any], ...]
+
+    @property
+    def purchased_product_ids(self) -> tuple[str, ...]:
+        return tuple(
+            item["product_id"]
+            for item in self.orders
+            if item.get("status") == "completed"
+        )
+
+    @property
+    def cart_product_ids(self) -> tuple[str, ...]:
+        return tuple(item["product_id"] for item in self.cart)
+
+
+@dataclass(frozen=True)
+class ExternalProfileData:
+    user_id: int
+    source: str
+    available: bool
+    profile: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -64,10 +85,20 @@ class _UserContextPayload(BaseModel):
     model_config = ConfigDict(strict=True)
 
     user_id: int
-    browsing_product_ids: list[str]
-    purchased_product_ids: list[str]
-    cart_product_ids: list[str]
-    profile: dict[str, str]
+    available: bool = True
+    is_new_user: bool = False
+    browsing: list[dict[str, Any]]
+    orders: list[dict[str, Any]]
+    cart: list[dict[str, Any]]
+
+
+class _ExternalProfilePayload(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    user_id: int
+    source: Literal["recommendation-platform"]
+    available: bool = True
+    profile: dict[str, Any]
 
 
 class _RecommendationPayload(_ProductListPayload):
@@ -116,9 +147,21 @@ class MallClient:
         payload = self._get_json(f"/users/{user_id}/context", _UserContextPayload)
         return UserContextData(
             user_id=payload.user_id,
-            browsing_product_ids=tuple(payload.browsing_product_ids),
-            purchased_product_ids=tuple(payload.purchased_product_ids),
-            cart_product_ids=tuple(payload.cart_product_ids),
+            available=payload.available,
+            is_new_user=payload.is_new_user,
+            browsing=tuple(payload.browsing),
+            orders=tuple(payload.orders),
+            cart=tuple(payload.cart),
+        )
+
+    def get_external_profile(self, user_id: int) -> ExternalProfileData:
+        payload = self._get_json(
+            f"/users/{user_id}/external-profile", _ExternalProfilePayload
+        )
+        return ExternalProfileData(
+            user_id=payload.user_id,
+            source=payload.source,
+            available=payload.available,
             profile=dict(payload.profile),
         )
 

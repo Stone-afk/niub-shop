@@ -126,6 +126,10 @@ These variables are server-only and are never exposed to the browser as `NEXT_PU
 
 - `GET /health`
 - `GET /products`
+- `GET /users/{user_id}/context`
+- `GET /users/{user_id}/external-profile`
+- `GET /users/{user_id}/recommendations`
+- `GET /users/{user_id}/ads/recommendations`
 
 ```bash
 curl http://localhost:8001/products
@@ -171,7 +175,7 @@ The persisted conversation API uses the OpenAI Agents SDK to manage the ReAct lo
 
 ```text
 Agents SDK Runner 执行 Agent / Agents SDK Runner executes the Agent
-  → 模型加载用户上下文 / model loads browsing, order, cart, and profile context
+  → 模型加载 Agent 内部画像、外部画像和用户上下文 / model loads Agent-owned profile, external profile, and user context
   → 模型查询商城自然推荐与广告推荐 / model loads organic and sponsored candidates
   → 必要时调用 search_products 做结构化筛选 / optionally narrows candidates with search_products
   → SDK 将工具结果回传模型继续推理 / SDK returns tool results for another reasoning step
@@ -180,13 +184,13 @@ Agents SDK Runner 执行 Agent / Agents SDK Runner executes the Agent
   → 原子保存并发送 SSE / atomically persists and emits SSE
 ```
 
-`get_user_context` 返回浏览、购买、购物车和用户画像 mock 数据；`get_product_recommendations` 返回商城自然推荐；`get_ad_recommendations` 返回带 `sponsored` 来源的广告推荐。最近购买过的商品会在工具层过滤，避免直接重复推荐。`search_products` 支持可选的 `keyword`、`category`、`min_price_cents`、`max_price_cents`、`sort`（`relevance | price_asc | price_desc`）和 `limit`（1–10，默认 5）。模型每轮最多搜索三次，可调整条件后再次查询。未知字段、负数价格、倒置区间和超限数量都会在访问商城前被拒绝。
+`get_agent_profile` 返回 Agent 服务内部维护的画像；`get_external_profile` 返回推荐平台画像 mock；`get_user_context` 返回结构化浏览、订单和购物车记录，并支持新用户空数组；`get_product_recommendations` 返回商城自然推荐；`get_ad_recommendations` 返回带 `sponsored` 来源的广告推荐。任意单个来源为空或不可用时，Agent 会继续使用其它来源。最近购买过的商品会在工具层过滤，避免直接重复推荐。`search_products` 支持可选的 `keyword`、`category`、`min_price_cents`、`max_price_cents`、`sort`（`relevance | price_asc | price_desc`）和 `limit`（1–10，默认 5）。模型每轮最多搜索三次，可调整条件后再次查询。未知字段、负数价格、倒置区间和超限数量都会在访问商城前被拒绝。
 
 `search_products` accepts optional `keyword`, `category`, `min_price_cents`, `max_price_cents`, `sort` (`relevance | price_asc | price_desc`), and `limit` (1–10, default 5). The model may refine its filters but can search at most three times per turn. Unknown fields, negative prices, inverted ranges, and invalid limits are rejected before Mall access.
 
-最终提交包含自然语言 `answer` 和最多五个 `product_ids`。每个 ID 必须来自本轮成功工具结果；重复 ID 会按首次出现顺序去重，虚构或未经工具返回的 ID 会使整轮失败，不会部分保存。商品来源同步保存为 `organic` 或 `sponsored`；最多两个广告商品，商品不足五个时允许少于五个。工具参数、原始工具结果和内部调用轨迹不会作为聊天消息持久化。
+最终提交包含自然语言 `answer` 和最多三个 `product_ids`。每个 ID 必须来自本轮成功工具结果；重复 ID 会按首次出现顺序去重，虚构或未经工具返回的 ID 会使整轮失败，不会部分保存。商品来源同步保存为 `organic` 或 `sponsored`；最多一个广告商品，商品不足三个时允许少于三个。无可信候选时返回空数组，并提示用户可以尝试其它平台。工具参数、原始工具结果和内部调用轨迹不会作为聊天消息持久化。
 
-The final submission contains a natural-language `answer` and up to five `product_ids`. Every ID must come from a successful tool result in the same turn. Duplicate IDs are removed in first-seen order; invented or unreturned IDs invalidate the whole turn, and nothing is partially persisted. Product sources are persisted as `organic` or `sponsored`; at most two sponsored products are allowed, and fewer than five are valid when fewer candidates exist. Tool arguments, raw tool results, and internal traces are not stored as chat messages.
+The final submission contains a natural-language `answer` and up to three `product_ids`. Every ID must come from a successful tool result in the same turn. Duplicate IDs are removed in first-seen order; invented or unreturned IDs invalidate the whole turn, and nothing is partially persisted. Product sources are persisted as `organic` or `sponsored`; at most one sponsored product is allowed, and fewer than three are valid when fewer candidates exist. If no trusted candidate exists, the result contains an empty list and suggests trying other platforms. Tool arguments, raw tool results, and internal traces are not stored as chat messages.
 
 conversation 成功流的事件顺序固定如下，即使没有推荐商品也会发送一次空数组：
 
