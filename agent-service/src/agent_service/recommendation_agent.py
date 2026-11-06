@@ -149,8 +149,6 @@ async def _search_products(
         except MallServiceUnavailable as error:
             raise MallServiceUnavailable("Mall service is unavailable") from error
 
-        if state.source_tool is not None and not state.context_loaded:
-            await _get_user_context(run_context)
         if state.purchased_ids:
             products = tuple(
                 product for product in products if product.id not in state.purchased_ids
@@ -267,8 +265,6 @@ async def _get_source_recommendations(
     source = run_context.context.source_tool
     if source is None:
         raise MallServiceUnavailable("Mall service is unavailable")
-    if not run_context.context.context_loaded:
-        await _get_user_context(run_context)
     try:
         result = (
             await source.get_ad_recommendations(run_context.context.user_id)
