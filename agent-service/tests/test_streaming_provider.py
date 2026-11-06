@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import anyio
@@ -159,6 +160,33 @@ async def test_complete_response_posts_tools_and_buffers_split_text() -> None:
     }
     assert stream.closed
     assert transport.closed
+
+
+@pytest.mark.anyio
+async def test_generation_settings_are_sent_when_configured() -> None:
+    captured: dict[str, object] = {}
+    stream = ChunkedStream([b"data: [DONE]\n\n"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return sse_response(stream)
+
+    configured = replace(
+        config(), temperature=0.7, max_tokens=32768, timeout_seconds=1800
+    )
+    await OpenAICompatibleProvider(
+        configured, transport=TrackingTransport(handler)
+    ).complete_response(MESSAGES, tools=TOOLS)
+
+    assert captured["body"] == {
+        "model": "example-chat",
+        "messages": MESSAGES,
+        "stream": True,
+        "temperature": 0.7,
+        "max_tokens": 32768,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+    }
 
 
 @pytest.mark.anyio

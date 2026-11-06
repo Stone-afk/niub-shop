@@ -51,7 +51,32 @@ def test_loads_complete_config_and_hides_api_key_from_repr(tmp_path: Path) -> No
     assert config.recommendation_policy_prompt_file == (
         tmp_path / "recommendation-policy.md"
     )
+    assert config.temperature is None
+    assert config.max_tokens is None
+    assert config.max_turns == 10
+    assert config.tool_timeout_seconds == 1800.0
     assert SECRET not in repr(config)
+
+
+def test_loads_generation_and_runtime_limits(tmp_path: Path) -> None:
+    config = load_llm_config(
+        write_config(
+            tmp_path,
+            valid_yaml(
+                temperature=0.7,
+                max_tokens=800,
+                timeout_seconds=1800,
+                max_turns=10,
+                tool_timeout_seconds=1800,
+            ),
+        )
+    )
+
+    assert config.temperature == 0.7
+    assert config.max_tokens == 32768
+    assert config.timeout_seconds == 1800.0
+    assert config.max_turns == 10
+    assert config.tool_timeout_seconds == 1800.0
 
 
 def test_missing_config_file_has_safe_error(tmp_path: Path) -> None:

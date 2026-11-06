@@ -230,6 +230,10 @@ class OpenAICompatibleProvider:
                 "messages": list(messages),
                 "stream": True,
             }
+            if self._config.temperature is not None:
+                body["temperature"] = self._config.temperature
+            if self._config.max_tokens is not None:
+                body["max_tokens"] = self._config.max_tokens
             if extra_body:
                 body.update(extra_body)
             request = client.build_request(

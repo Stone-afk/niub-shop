@@ -21,9 +21,27 @@ class LLMConfig:
     timeout_seconds: float
     prompt_file: Path
     recommendation_policy_prompt_file: Path
+    temperature: float | None = None
+    max_tokens: int | None = None
+    max_turns: int = 10
+    tool_timeout_seconds: float = 1800.0
 
 
 _FIELDS = {
+    "provider",
+    "base_url",
+    "api_key",
+    "model",
+    "timeout_seconds",
+    "prompt_file",
+    "recommendation_policy_prompt_file",
+    "temperature",
+    "max_tokens",
+    "max_turns",
+    "tool_timeout_seconds",
+}
+
+_REQUIRED_FIELDS = {
     "provider",
     "base_url",
     "api_key",
@@ -71,7 +89,7 @@ def load_llm_config(path: str | Path) -> LLMConfig:
     unknown_fields = sorted(str(key) for key in keys - _FIELDS)
     if unknown_fields:
         raise ConfigurationError(f"Unknown llm config keys: {', '.join(unknown_fields)}")
-    missing_fields = sorted(_FIELDS - keys)
+    missing_fields = sorted(_REQUIRED_FIELDS - keys)
     if missing_fields:
         raise ConfigurationError(
             f"Missing llm config keys: {', '.join(missing_fields)}"
@@ -108,6 +126,43 @@ def load_llm_config(path: str | Path) -> LLMConfig:
     ):
         raise ConfigurationError("llm.timeout_seconds must be a positive number")
 
+    temperature_value = values.get("temperature")
+    if temperature_value is not None and (
+        isinstance(temperature_value, bool)
+        or not isinstance(temperature_value, (int, float))
+        or not math.isfinite(temperature_value)
+        or temperature_value < 0
+        or temperature_value > 2
+    ):
+        raise ConfigurationError("llm.temperature must be between 0 and 2")
+
+    max_tokens_value = values.get("max_tokens")
+    if max_tokens_value is not None and (
+        isinstance(max_tokens_value, bool)
+        or not isinstance(max_tokens_value, int)
+        or max_tokens_value <= 0
+    ):
+        raise ConfigurationError("llm.max_tokens must be a positive integer")
+
+    max_turns_value = values.get("max_turns", 10)
+    if (
+        isinstance(max_turns_value, bool)
+        or not isinstance(max_turns_value, int)
+        or max_turns_value < 1
+    ):
+        raise ConfigurationError("llm.max_turns must be a positive integer")
+
+    tool_timeout_value = values.get("tool_timeout_seconds", 1800)
+    if (
+        isinstance(tool_timeout_value, bool)
+        or not isinstance(tool_timeout_value, (int, float))
+        or tool_timeout_value <= 0
+        or not math.isfinite(tool_timeout_value)
+    ):
+        raise ConfigurationError(
+            "llm.tool_timeout_seconds must be a positive number"
+        )
+
     prompt_file = config_path.parent / _required_string(values, "prompt_file")
     recommendation_policy_prompt_file = config_path.parent / _required_string(
         values, "recommendation_policy_prompt_file"
@@ -121,4 +176,14 @@ def load_llm_config(path: str | Path) -> LLMConfig:
         timeout_seconds=float(timeout_value),
         prompt_file=prompt_file,
         recommendation_policy_prompt_file=recommendation_policy_prompt_file,
+        temperature=(
+            None if temperature_value is None else float(temperature_value)
+        ),
+        max_tokens=(
+            None
+            if max_tokens_value is None
+            else max(32768, max_tokens_value)
+        ),
+        max_turns=max_turns_value,
+        tool_timeout_seconds=float(tool_timeout_value),
     )

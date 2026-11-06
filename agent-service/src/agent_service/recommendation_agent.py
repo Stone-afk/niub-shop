@@ -79,6 +79,8 @@ class RecommendationRunContext:
     max_search_calls: int
     source_tool: Any | None = None
     profile_provider: AgentProfileProvider | None = None
+    max_turns: int = 10
+    tool_timeout_seconds: float = 1800.0
     user_id: int = 1
     search_count: int = 0
     searched: bool = False
@@ -379,12 +381,27 @@ _SUBMIT_RECOMMENDATION_SCHEMA: dict[str, object] = {
 }
 
 
+async def _execute_with_timeout(
+    run_context: RunContextWrapper[RecommendationRunContext],
+    operation: Any,
+) -> str:
+    try:
+        return await asyncio.wait_for(
+            operation,
+            timeout=run_context.context.tool_timeout_seconds,
+        )
+    except TimeoutError as error:
+        raise ToolLoopExceeded("Tool execution timed out") from error
+
+
 async def _invoke_search_tool(run_context: Any, arguments: str) -> str:
     try:
         payload = json.loads(arguments)
         if not isinstance(payload, dict):
             raise TypeError
-        return await _search_products(run_context, **payload)
+        return await _execute_with_timeout(
+            run_context, _search_products(run_context, **payload)
+        )
     except (json.JSONDecodeError, TypeError) as error:
         raise ToolArgumentsInvalid("Product search arguments are invalid") from error
 
@@ -394,7 +411,9 @@ async def _invoke_submit_tool(run_context: Any, arguments: str) -> str:
         payload = json.loads(arguments)
         if not isinstance(payload, dict):
             raise TypeError
-        return await _submit_product_recommendation(run_context, **payload)
+        return await _execute_with_timeout(
+            run_context, _submit_product_recommendation(run_context, **payload)
+        )
     except (json.JSONDecodeError, TypeError) as error:
         raise RecommendationInvalid("Recommendation response is invalid") from error
 
@@ -414,9 +433,17 @@ class RecommendationAgent:
         ),
         user_id: int = 1,
         profile_provider: AgentProfileProvider | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        max_turns: int = 10,
+        tool_timeout_seconds: float = 1800.0,
     ) -> None:
         if max_search_calls < 0:
             raise ValueError("max_search_calls must be non-negative")
+        if max_turns < 1:
+            raise ValueError("max_turns must be positive")
+        if tool_timeout_seconds <= 0:
+            raise ValueError("tool_timeout_seconds must be positive")
         self._product_tool = product_tool
         self._source_tool = product_tool if all(
             hasattr(product_tool, name)
@@ -429,6 +456,10 @@ class RecommendationAgent:
         self._user_id = user_id
         self._profile_provider = profile_provider or AgentProfileProvider()
         self._max_search_calls = max_search_calls
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+        self._max_turns = max_turns
+        self._tool_timeout_seconds = tool_timeout_seconds
         self.model_name = model_name or str(
             getattr(model, "model", type(model).__name__)
         )
@@ -460,35 +491,45 @@ class RecommendationAgent:
                     name="get_agent_profile",
                     description="Load the user profile maintained by the Agent service.",
                     params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                    on_invoke_tool=lambda context, _arguments: _get_agent_profile(context),
+                    on_invoke_tool=lambda context, _arguments: _execute_with_timeout(
+                        context, _get_agent_profile(context)
+                    ),
                     strict_json_schema=True,
                 ),
                 FunctionTool(
                     name="get_external_profile",
                     description="Load the profile from the external recommendation platform.",
                     params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                    on_invoke_tool=lambda context, _arguments: _get_external_profile(context),
+                    on_invoke_tool=lambda context, _arguments: _execute_with_timeout(
+                        context, _get_external_profile(context)
+                    ),
                     strict_json_schema=True,
                 ),
                 FunctionTool(
                     name="get_user_context",
                     description="Load browsing history, orders, cart, and user profile.",
                     params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                    on_invoke_tool=lambda context, _arguments: _get_user_context(context),
+                    on_invoke_tool=lambda context, _arguments: _execute_with_timeout(
+                        context, _get_user_context(context)
+                    ),
                     strict_json_schema=True,
                 ),
                 FunctionTool(
                     name="get_product_recommendations",
                     description="Load organic product recommendations from the mall.",
                     params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                    on_invoke_tool=lambda context, _arguments: _get_product_recommendations(context),
+                    on_invoke_tool=lambda context, _arguments: _execute_with_timeout(
+                        context, _get_product_recommendations(context)
+                    ),
                     strict_json_schema=True,
                 ),
                 FunctionTool(
                     name="get_ad_recommendations",
                     description="Load sponsored product recommendations from the ad system.",
                     params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                    on_invoke_tool=lambda context, _arguments: _get_ad_recommendations(context),
+                    on_invoke_tool=lambda context, _arguments: _execute_with_timeout(
+                        context, _get_ad_recommendations(context)
+                    ),
                     strict_json_schema=True,
                 ),
             ]
@@ -507,7 +548,11 @@ class RecommendationAgent:
             instructions=load_prompt(self._recommendation_policy_prompt_path),
             model=self._model,
             tools=self._tools,
-            model_settings=ModelSettings(parallel_tool_calls=False),
+            model_settings=ModelSettings(
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                parallel_tool_calls=False,
+            ),
             tool_use_behavior={
                 "stop_at_tool_names": ["submit_product_recommendation"]
             },
@@ -517,6 +562,8 @@ class RecommendationAgent:
             max_search_calls=self._max_search_calls,
             source_tool=self._source_tool,
             profile_provider=self._profile_provider,
+            max_turns=self._max_turns,
+            tool_timeout_seconds=self._tool_timeout_seconds,
             user_id=self._user_id,
         )
         try:
@@ -524,7 +571,7 @@ class RecommendationAgent:
                 agent,
                 cast(Any, list(messages)),
                 context=context,
-                max_turns=self._max_search_calls + (5 if self._source_tool is not None else 2),
+                max_turns=self._max_turns,
                 run_config=self._run_config,
             )
         except APIError as error:
@@ -583,4 +630,8 @@ def create_recommendation_agent(
         product_tool,
         model_name=config.model,
         recommendation_policy_prompt_path=config.recommendation_policy_prompt_file,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+        max_turns=config.max_turns,
+        tool_timeout_seconds=config.tool_timeout_seconds,
     )

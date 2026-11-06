@@ -212,7 +212,12 @@ def create_app(
         product_tool = (
             product_tool_factory(mall_service_url)
             if product_tool_factory is not None
-            else MallProductSearchTool(MallClient(mall_service_url))
+            else MallProductSearchTool(
+                MallClient(
+                    mall_service_url,
+                    timeout=resolved_config.tool_timeout_seconds,
+                )
+            )
         )
         if recommendation_agent_factory is not None:
             resolved_recommendation_agent = recommendation_agent_factory(
