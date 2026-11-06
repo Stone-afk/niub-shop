@@ -294,9 +294,12 @@ class ConversationRepository:
         recommended_product_ids: Sequence[str] = (),
         recommended_product_sources: Sequence[str] = (),
         plan_state: PlanState | None = None,
+        plan_version: int = 1,
     ) -> Turn:
         if not assistant_content:
             raise ValueError("assistant content must not be empty")
+        if plan_version < 1:
+            raise ValueError("plan version must be positive")
         product_ids = tuple(recommended_product_ids)
         if len(product_ids) > 3:
             raise ValueError("at most three recommended product IDs are allowed")
@@ -364,7 +367,7 @@ class ConversationRepository:
                         plan_state.status,
                         plan_state.current_step_id,
                         json.dumps(state, ensure_ascii=False),
-                        1,
+                        plan_version,
                         now,
                         now,
                     ),

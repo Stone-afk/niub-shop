@@ -62,6 +62,7 @@ class BufferedRecommendationStream:
         self.recommended_product_ids = result.product_ids
         self.recommended_product_sources = result.product_sources
         self.plan_state = result.plan_state
+        self.plan_version = result.plan_version or 1
         self._finished = False
 
     def __aiter__(self) -> AsyncIterator[str]:
@@ -82,6 +83,7 @@ class BufferedRecommendationStream:
                     self.result.product_ids,
                     self.result.product_sources,
                     self.plan_state,
+                    self.plan_version,
                 )
             )
             completed = True
