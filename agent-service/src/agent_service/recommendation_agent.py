@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -25,8 +26,9 @@ from openai import APIError, AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from .config import LLMConfig
-from .mall_client import MallServiceUnavailable
+from .mall_client import MallOrderRejected, MallServiceUnavailable
 from .product_tools import ProductSearchFilters, ProductSearchTool, SearchSort
+from .mall_client import OrderData
 from .providers import ModelMessage, ModelProtocolError, ModelUpstreamError
 from .prompt_loader import load_prompt
 from .profile_provider import AgentProfileProvider
@@ -61,6 +63,14 @@ class RecommendationResult:
     product_sources: tuple[str, ...] = field(default=(), compare=False)
     plan_state: PlanState | None = field(default=None, compare=False)
     plan_version: int = field(default=0, compare=False)
+    orders: tuple["OrderReference", ...] = field(default=(), compare=False)
+
+
+@dataclass(frozen=True)
+class OrderReference:
+    order_id: str
+    preview_path: str
+    status: str
 
 
 class _RecommendationSubmission(BaseModel):
@@ -85,6 +95,8 @@ class RecommendationRunContext:
     max_turns: int = 10
     tool_timeout_seconds: float = 1800.0
     user_id: int = 1
+    conversation_id: str = ""
+    turn_id: str = ""
     search_count: int = 0
     searched: bool = False
     found_products: bool = False
@@ -96,6 +108,7 @@ class RecommendationRunContext:
     plan_state: PlanState | None = None
     plan_history: list[PlanState] = field(default_factory=list)
     submission: RecommendationResult | None = None
+    orders: dict[str, OrderReference] = field(default_factory=dict)
     search_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -302,6 +315,53 @@ async def _get_ad_recommendations(run_context: Any) -> str:
     return await _get_source_recommendations(run_context, sponsored=True)
 
 
+class _OrderItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    product_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    quantity: Annotated[int, Field(ge=1, le=99)]
+
+
+async def _create_order_draft(
+    run_context: RunContextWrapper[RecommendationRunContext],
+    items: list[dict[str, object]],
+) -> str:
+    source = run_context.context.source_tool
+    if source is None or not hasattr(source, "create_order"):
+        raise MallServiceUnavailable("Mall service is unavailable")
+    try:
+        validated = [_OrderItem.model_validate(item) for item in items]
+    except ValidationError as error:
+        raise ToolArgumentsInvalid("Order arguments are invalid") from error
+    normalized = [
+        {"product_id": item.product_id, "quantity": item.quantity}
+        for item in sorted(validated, key=lambda value: value.product_id)
+    ]
+    run_context.context.candidate_ids.update(item["product_id"] for item in normalized)
+    for item in normalized:
+        run_context.context.candidate_sources.setdefault(item["product_id"], "organic")
+    intent_hash = hashlib.sha256(
+        json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    existing = run_context.context.orders.get(intent_hash)
+    if existing is not None:
+        return json.dumps(asdict(existing), ensure_ascii=False)
+    client_request_id = f"{run_context.context.turn_id or 'unbound'}:{intent_hash}"
+    try:
+        order: OrderData = await source.create_order(normalized, client_request_id)
+    except MallOrderRejected as error:
+        raise ToolArgumentsInvalid(f"Order was rejected: {error}") from error
+    except MallServiceUnavailable:
+        raise
+    reference = OrderReference(
+        order_id=order.id,
+        preview_path=f"/orders/{order.id}/preview",
+        status=order.status,
+    )
+    run_context.context.orders[intent_hash] = reference
+    return json.dumps(asdict(reference), ensure_ascii=False)
+
+
 async def _submit_product_recommendation(
     run_context: RunContextWrapper[RecommendationRunContext],
     answer: str,
@@ -340,12 +400,14 @@ async def _submit_product_recommendation(
         answer=submission.answer,
         product_ids=deduplicated_ids,
         product_sources=product_sources,
+        orders=tuple(state.orders.values()),
     )
     return json.dumps(
         {
             "answer": submission.answer,
             "product_ids": list(deduplicated_ids),
             "product_sources": list(product_sources),
+            "orders": [asdict(order) for order in state.orders.values()],
         },
         ensure_ascii=False,
     )
@@ -383,6 +445,28 @@ _SUBMIT_RECOMMENDATION_SCHEMA: dict[str, object] = {
 }
 
 _PLAN_STATE_SCHEMA: dict[str, object] = PlanState.model_json_schema()
+
+_CREATE_ORDER_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string", "minLength": 1},
+                    "quantity": {"type": "integer", "minimum": 1, "maximum": 99},
+                },
+                "required": ["product_id", "quantity"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
 
 
 async def _execute_with_timeout(
@@ -431,6 +515,18 @@ async def _invoke_submit_tool(run_context: Any, arguments: str) -> str:
         )
     except (json.JSONDecodeError, TypeError) as error:
         raise RecommendationInvalid("Recommendation response is invalid") from error
+
+
+async def _invoke_create_order_tool(run_context: Any, arguments: str) -> str:
+    try:
+        payload = json.loads(arguments)
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            raise TypeError
+        return await _execute_with_timeout(
+            run_context, _create_order_draft(run_context, payload["items"])
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ToolArgumentsInvalid("Order arguments are invalid") from error
 
 
 class RecommendationAgent:
@@ -482,6 +578,8 @@ class RecommendationAgent:
         self._recommendation_policy_prompt_path = Path(
             recommendation_policy_prompt_path
         )
+        self._conversation_id = ""
+        self._turn_id = ""
         self.tracing_disabled = True
         search_tool = FunctionTool(
             name="search_products",
@@ -501,6 +599,16 @@ class RecommendationAgent:
         )
         self._tools = [search_tool, submit_tool]
         if self._source_tool is not None:
+            if hasattr(self._source_tool, "create_order"):
+                self._tools.append(
+                    FunctionTool(
+                        name="create_order_draft",
+                        description="Create a pending-payment order only after the user explicitly confirms purchase.",
+                        params_json_schema=_CREATE_ORDER_SCHEMA,
+                        on_invoke_tool=_invoke_create_order_tool,
+                        strict_json_schema=True,
+                    )
+                )
             self._tools[0:0] = [
                 FunctionTool(
                     name="update_plan",
@@ -587,6 +695,8 @@ class RecommendationAgent:
             max_turns=self._max_turns,
             tool_timeout_seconds=self._tool_timeout_seconds,
             user_id=self._user_id,
+            conversation_id=self._conversation_id,
+            turn_id=self._turn_id,
         )
         try:
             result = await Runner.run(
@@ -607,6 +717,20 @@ class RecommendationAgent:
         except MaxTurnsExceeded as error:
             raise ToolLoopExceeded("Recommendation tool loop exceeded") from error
         except (ModelBehaviorError, UserError) as error:
+            if context.orders:
+                order_text = "\n".join(
+                    f"- {order.order_id}: {order.preview_path}"
+                    for order in context.orders.values()
+                )
+                return RecommendationResult(
+                    answer=(
+                        "订单已创建，状态为待支付。请打开订单预览页完成支付。 / "
+                        "The order was created and is pending payment. Open the order preview to pay.\n"
+                        f"{order_text}"
+                    ),
+                    product_ids=(),
+                    orders=tuple(context.orders.values()),
+                )
             cause = error.__cause__
             if isinstance(
                 cause,
@@ -624,6 +748,7 @@ class RecommendationAgent:
                 product_sources=context.submission.product_sources,
                 plan_state=context.plan_state,
                 plan_version=len(context.plan_history),
+                orders=context.submission.orders,
             )
         if context.searched:
             raise RecommendationInvalid("Recommendation response is invalid")
@@ -638,7 +763,12 @@ class RecommendationAgent:
             product_ids=(),
             plan_state=context.plan_state,
             plan_version=len(context.plan_history),
+            orders=tuple(context.orders.values()),
         )
+
+    def set_turn_context(self, conversation_id: str, turn_id: str) -> None:
+        self._conversation_id = conversation_id
+        self._turn_id = turn_id
 
 
 def create_recommendation_agent(

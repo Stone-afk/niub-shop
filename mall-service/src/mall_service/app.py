@@ -1,20 +1,35 @@
 """FastAPI application for the mall service."""
 
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from .catalog import list_products
 from .models import (
     BrowsingRecord,
     CartRecord,
+    CreateOrderRequest,
     ExternalProfile,
+    Order,
     OrderRecord,
     ProductList,
     RecommendationList,
     UserContext,
 )
+from .orders import (
+    OrderNotFoundError,
+    OrderStore,
+    ProductOutOfStockError,
+    UnknownProductError,
+)
 
 
 app = FastAPI(title="niub mall service")
+order_store = OrderStore(os.getenv("MALL_DB_FILE", "data/mall.db"))
 
 
 @app.get("/health")
@@ -93,3 +108,50 @@ def ad_recommendations(user_id: int) -> RecommendationList:
     del user_id
     products = list_products()
     return RecommendationList(source="sponsored", items=[products[0], products[1]])
+
+
+@app.post("/orders", response_model=Order, status_code=201)
+def create_order(request: CreateOrderRequest):
+    try:
+        order, created = order_store.create(1, request)
+    except UnknownProductError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"code": "unknown_product", "message": str(error)}},
+        )
+    except ProductOutOfStockError as error:
+        return JSONResponse(
+            status_code=409,
+            content={"error": {"code": "out_of_stock", "message": str(error)}},
+        )
+    except ValueError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"code": "invalid_order", "message": str(error)}},
+        )
+    return JSONResponse(
+        status_code=201 if created else 200,
+        content=order.model_dump(mode="json"),
+    )
+
+
+@app.get("/orders/{order_id}/preview", response_model=Order)
+def order_preview(order_id: str):
+    try:
+        return order_store.get(1, order_id)
+    except OrderNotFoundError:
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"code": "order_not_found", "message": "Order not found"}},
+        )
+
+
+@app.post("/orders/{order_id}/pay", response_model=Order)
+def pay_order(order_id: str):
+    try:
+        return order_store.pay(1, order_id)
+    except OrderNotFoundError:
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"code": "order_not_found", "message": "Order not found"}},
+        )

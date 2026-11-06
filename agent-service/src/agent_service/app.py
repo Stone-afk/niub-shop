@@ -172,6 +172,16 @@ async def _persisted_model_events(
             )
         payload = json.dumps(recommendation_payload, ensure_ascii=False)
         yield f"event: recommendations\ndata: {payload}\n\n"
+        for order in stream.orders:
+            payload = json.dumps(
+                {
+                    "order_id": order.order_id,
+                    "preview_path": order.preview_path,
+                    "status": order.status,
+                },
+                ensure_ascii=False,
+            )
+            yield f"event: order\ndata: {payload}\n\n"
         yield "event: done\ndata: {}\n\n"
     finally:
         await iterator.aclose()
@@ -353,6 +363,7 @@ def create_app(
                         turn.recommended_product_sources
                     ),
                     "plan_state": turn.plan_state,
+                    "orders": list(turn.orders),
                 }
                 for turn in item.turns
             ],

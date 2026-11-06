@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import {
   createConversation,
@@ -10,7 +11,7 @@ import {
   streamConversationTurn,
 } from "@/lib/conversations";
 import { listProducts } from "@/lib/products";
-import type { ConversationDetail, ConversationSummary, Product } from "@/lib/types";
+import type { ConversationDetail, ConversationSummary, OrderLink, Product } from "@/lib/types";
 import styles from "./page.module.css";
 
 const NEW_CHAT_KEY = "__new_chat__";
@@ -22,6 +23,7 @@ type StreamView = {
   productIds: string[];
   productSources: string[];
   recommendationsReceived: boolean;
+  orders: OrderLink[];
 };
 
 function formatPrice(product: Product): string {
@@ -95,6 +97,7 @@ function ProductCards({
 }
 
 export default function ChatPage() {
+  const router = useRouter();
   const [summaries, setSummaries] = useState<ConversationSummary[]>([]);
   const [details, setDetails] = useState<Record<string, ConversationDetail>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -210,6 +213,14 @@ export default function ChatPage() {
     });
   }
 
+  function setOrders(conversationId: string, order: OrderLink) {
+    setStreams((current) => {
+      const stream = current[conversationId];
+      if (!stream || stream.orders.some((item) => item.order_id === order.order_id)) return current;
+      return { ...current, [conversationId]: { ...stream, orders: [...stream.orders, order] } };
+    });
+  }
+
   async function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = draft.trim();
@@ -241,14 +252,21 @@ export default function ChatPage() {
           productIds: [],
           productSources: [],
           recommendationsReceived: false,
+          orders: [],
         },
       }));
+      let orderPath: string | null = null;
       await streamConversationTurn(
         targetId,
         content,
         (delta) => appendDelta(targetId, delta),
         (ids, sources) => setRecommendations(targetId, ids, sources),
+        (order) => {
+          setOrders(targetId, order);
+          orderPath = order.preview_path;
+        },
       );
+      if (orderPath) router.push(orderPath);
     } catch {
       const errorKey = conversationId ?? NEW_CHAT_KEY;
       setOperationErrors((current) => ({ ...current, [errorKey]: true }));
@@ -285,15 +303,22 @@ export default function ChatPage() {
         productIds: [],
         productSources: [],
         recommendationsReceived: false,
+        orders: [],
       },
     }));
+    let orderPath: string | null = null;
     try {
       await retryConversationTurn(
         conversationId,
         turnId,
         (delta) => appendDelta(conversationId, delta),
         (ids, sources) => setRecommendations(conversationId, ids, sources),
+        (order) => {
+          setOrders(conversationId, order);
+          orderPath = order.preview_path;
+        },
       );
+      if (orderPath) router.push(orderPath);
     } catch {
       setOperationErrors((current) => ({ ...current, [conversationId]: true }));
     } finally {
@@ -393,6 +418,11 @@ export default function ChatPage() {
                         catalogError={catalogError}
                         showEmpty
                       />
+                      {turn.orders?.map((order) => (
+                        <a className={styles.orderLink} href={order.preview_path} key={order.order_id}>
+                          查看订单 / View order {order.order_id}
+                        </a>
+                      ))}
                     </>
                   )}
                   {turn.status === "failed" && (
@@ -427,6 +457,11 @@ export default function ChatPage() {
                     catalogError={catalogError}
                     showEmpty={stream.recommendationsReceived}
                   />
+                  {stream.orders.map((order) => (
+                    <a className={styles.orderLink} href={order.preview_path} key={order.order_id}>
+                      查看订单 / View order {order.order_id}
+                    </a>
+                  ))}
                 </div>
               )}
               <div ref={endMarker} />

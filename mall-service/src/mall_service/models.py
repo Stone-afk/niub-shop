@@ -61,3 +61,45 @@ class ExternalProfile(BaseModel):
     source: Literal["recommendation-platform"]
     available: bool = True
     profile: dict[str, object] = Field(default_factory=dict)
+
+
+OrderStatus = Literal["pending_payment", "paid"]
+
+
+class OrderItemRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    product_id: str = Field(min_length=1)
+    quantity: int = Field(ge=1, le=99)
+
+
+class CreateOrderRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    items: list[OrderItemRequest] = Field(min_length=1, max_length=20)
+    client_request_id: str = Field(min_length=1, max_length=200)
+
+
+class OrderItemSnapshot(BaseModel):
+    model_config = ConfigDict(strict=True, frozen=True)
+
+    product_id: str
+    name: str
+    description: str
+    quantity: int = Field(ge=1)
+    unit_price_cents: int = Field(ge=0)
+    line_total_cents: int = Field(ge=0)
+    currency: str
+
+
+class Order(BaseModel):
+    model_config = ConfigDict(strict=True, frozen=True)
+
+    id: str
+    user_id: int
+    status: OrderStatus
+    items: list[OrderItemSnapshot]
+    subtotal_cents: int = Field(ge=0)
+    total_cents: int = Field(ge=0)
+    currency: str
+    created_at: datetime

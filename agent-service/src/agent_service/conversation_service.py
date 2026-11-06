@@ -61,6 +61,7 @@ class BufferedRecommendationStream:
         self.chunk_size = chunk_size
         self.recommended_product_ids = result.product_ids
         self.recommended_product_sources = result.product_sources
+        self.orders = result.orders
         self.plan_state = result.plan_state
         self.plan_version = result.plan_version or 1
         self._finished = False
@@ -84,6 +85,14 @@ class BufferedRecommendationStream:
                     self.result.product_sources,
                     self.plan_state,
                     self.plan_version,
+                    [
+                        {
+                            "order_id": order.order_id,
+                            "preview_path": order.preview_path,
+                            "status": order.status,
+                        }
+                        for order in self.result.orders
+                    ],
                 )
             )
             completed = True
@@ -195,6 +204,9 @@ class ConversationService:
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.extend(stored_messages)
+            set_turn_context = getattr(self.recommendation_agent, "set_turn_context", None)
+            if set_turn_context is not None:
+                set_turn_context(conversation_id, turn.id)
             result = await self.recommendation_agent.generate(messages)
             self._validate_result(result)
         except BaseException as error:

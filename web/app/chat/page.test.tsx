@@ -15,6 +15,9 @@ const productApi = vi.hoisted(() => ({ listProducts: vi.fn() }));
 
 vi.mock("@/lib/conversations", () => api);
 vi.mock("@/lib/products", () => productApi);
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}));
 
 const products = [
   {
@@ -144,7 +147,7 @@ describe("persisted conversation page", () => {
     await user.click(screen.getByRole("button", { name: "发送 / Send" }));
 
     await waitFor(() => expect(api.createConversation).toHaveBeenCalledTimes(1));
-    expect(api.streamConversationTurn).toHaveBeenCalledWith("created", "第一问", expect.any(Function), expect.any(Function));
+    expect(api.streamConversationTurn).toHaveBeenCalledWith("created", "第一问", expect.any(Function), expect.any(Function), expect.any(Function));
     await waitFor(() => expect(api.listConversations).toHaveBeenCalledTimes(2));
   });
 
@@ -156,7 +159,7 @@ describe("persisted conversation page", () => {
     await user.type(screen.getByLabelText("消息 / Message"), "继续问");
     await user.click(screen.getByRole("button", { name: "发送 / Send" }));
 
-    await waitFor(() => expect(api.streamConversationTurn).toHaveBeenCalledWith("recent", "继续问", expect.any(Function), expect.any(Function)));
+    await waitFor(() => expect(api.streamConversationTurn).toHaveBeenCalledWith("recent", "继续问", expect.any(Function), expect.any(Function), expect.any(Function)));
     expect(api.createConversation).not.toHaveBeenCalled();
   });
 
@@ -167,7 +170,7 @@ describe("persisted conversation page", () => {
 
     await user.click(screen.getByRole("button", { name: "重试 / Retry" }));
 
-    await waitFor(() => expect(api.retryConversationTurn).toHaveBeenCalledWith("recent", "failed", expect.any(Function), expect.any(Function)));
+    await waitFor(() => expect(api.retryConversationTurn).toHaveBeenCalledWith("recent", "failed", expect.any(Function), expect.any(Function), expect.any(Function)));
     await waitFor(() => expect(api.getConversation).toHaveBeenCalledTimes(2));
   });
 

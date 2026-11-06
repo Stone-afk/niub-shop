@@ -18,12 +18,20 @@ function readField(line: string, field: string): string | null {
 
 export interface ConsumeChatStreamOptions {
   onRecommendations?: (ids: string[], sources: string[]) => void;
+  onOrder?: (order: OrderEvent) => void;
   requireRecommendations?: boolean;
   requestError?: string;
 }
 
 
-type StreamState = { seenRecommendations: boolean };
+export interface OrderEvent {
+  order_id: string;
+  preview_path: string;
+  status: "pending_payment";
+}
+
+
+type StreamState = { seenRecommendations: boolean; seenOrders: Set<string> };
 
 
 function handleFrame(
@@ -72,6 +80,34 @@ function handleFrame(
       throw new Error("Invalid chat stream");
     }
   }
+  if (event === "order") {
+    try {
+      const payload = JSON.parse(data) as {
+        order_id?: unknown;
+        preview_path?: unknown;
+        status?: unknown;
+      };
+      if (
+        typeof payload.order_id !== "string" ||
+        !payload.order_id ||
+        typeof payload.preview_path !== "string" ||
+        !payload.preview_path.startsWith("/orders/") ||
+        payload.status !== "pending_payment" ||
+        state.seenOrders.has(payload.order_id)
+      ) {
+        throw new Error("invalid order");
+      }
+      state.seenOrders.add(payload.order_id);
+      options.onOrder?.({
+        order_id: payload.order_id,
+        preview_path: payload.preview_path,
+        status: "pending_payment",
+      });
+      return false;
+    } catch {
+      throw new Error("Invalid chat stream");
+    }
+  }
   if (event !== "delta" || state.seenRecommendations) {
     throw new Error("Invalid chat stream");
   }
@@ -101,7 +137,7 @@ export async function consumeChatStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  const state: StreamState = { seenRecommendations: false };
+  const state: StreamState = { seenRecommendations: false, seenOrders: new Set() };
 
   while (true) {
     const { done, value } = await reader.read();

@@ -10,6 +10,7 @@ from agent_service.config import LLMConfig
 from agent_service.mall_client import (
     CandidateProducts,
     MallServiceUnavailable,
+    OrderData,
     ProductData,
     UserContextData,
 )
@@ -73,6 +74,25 @@ class SourceProductTool(RecordingProductTool):
         return CandidateProducts("sponsored", (item("5"), item("purchased")))
 
 
+class OrderProductTool(SourceProductTool):
+    def __init__(self) -> None:
+        super().__init__()
+        self.created_requests = []
+
+    async def create_order(self, items, client_request_id: str) -> OrderData:
+        self.created_requests.append((items, client_request_id))
+        return OrderData(
+            id=f"ord-{len(self.created_requests)}",
+            user_id=1,
+            status="pending_payment",
+            items=tuple(items),
+            subtotal_cents=39000,
+            total_cents=39000,
+            currency="TWD",
+            created_at="2026-11-06T10:00:00+00:00",
+        )
+
+
 @pytest.mark.anyio
 async def test_sdk_runner_returns_plain_text_without_searching() -> None:
     model = ScriptedModel([[assistant_message("  你好  ")]])
@@ -92,6 +112,70 @@ async def test_sdk_runner_returns_plain_text_without_searching() -> None:
         "search_products",
         "submit_product_recommendation",
     ]
+
+
+@pytest.mark.anyio
+async def test_explicit_purchase_creates_one_order_per_distinct_intent() -> None:
+    model = ScriptedModel(
+        [
+            [
+                function_call(
+                    "create_order_draft",
+                    {"items": [{"product_id": "1", "quantity": 1}]},
+                    call_id="order-1",
+                ),
+                function_call(
+                    "create_order_draft",
+                    {"items": [{"product_id": "2", "quantity": 1}]},
+                    call_id="order-2",
+                ),
+            ],
+            [
+                function_call(
+                    "submit_product_recommendation",
+                    {"answer": "已创建订单", "product_ids": ["1", "2"]},
+                    call_id="submit",
+                )
+            ],
+        ]
+    )
+    tool = OrderProductTool()
+    agent = RecommendationAgent(model, tool)
+    agent.set_turn_context("conversation-1", "turn-1")
+
+    result = await agent.generate([])
+
+    assert [order.order_id for order in result.orders] == ["ord-1", "ord-2"]
+    assert result.product_ids == ("1", "2")
+    assert len(tool.created_requests) == 2
+    assert tool.created_requests[0][1] != tool.created_requests[1][1]
+
+
+@pytest.mark.anyio
+async def test_created_order_survives_invalid_final_submission() -> None:
+    model = ScriptedModel(
+        [
+            [
+                function_call(
+                    "create_order_draft",
+                    {"items": [{"product_id": "1", "quantity": 1}]},
+                    call_id="order-1",
+                )
+            ],
+            [
+                function_call(
+                    "submit_product_recommendation",
+                    {"answer": "订单已创建", "product_ids": ["unknown"]},
+                    call_id="invalid-submit",
+                )
+            ],
+        ]
+    )
+
+    result = await RecommendationAgent(model, OrderProductTool()).generate([])
+
+    assert result.orders[0].order_id == "ord-1"
+    assert "订单" in result.answer
 
 
 @pytest.mark.anyio

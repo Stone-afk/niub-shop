@@ -1,0 +1,29 @@
+.page {
+  min-height: 100vh;
+  padding: 48px 24px;
+  background: #f7f4ed;
+  color: #1b2b23;
+}
+
+.card {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 36px;
+  border: 1px solid #d7d0c2;
+  border-radius: 24px;
+  background: #fffdf8;
+}
+
+.backLink { color: #9a4520; }
+.eyebrow { margin-top: 32px; color: #7d887f; font-weight: 700; }
+.orderId { color: #68736c; }
+.items { display: grid; gap: 14px; padding: 0; list-style: none; }
+.items li { display: flex; justify-content: space-between; gap: 16px; padding: 18px 0; border-bottom: 1px solid #e4ded2; }
+.items span { display: block; margin-top: 5px; color: #68736c; }
+.total { display: flex; justify-content: space-between; margin: 24px 0; font-size: 1.3rem; }
+.pending, .paid { display: inline-block; padding: 8px 14px; border-radius: 999px; font-weight: 700; }
+.pending { background: #fff0d8; color: #8f4b18; }
+.paid { background: #dff2e8; color: #27633f; }
+.error { padding: 14px; border-radius: 12px; background: #fde7e1; color: #9e3324; }
+.card button { padding: 14px 20px; border: 0; border-radius: 12px; background: #1b2b23; color: white; font-weight: 700; cursor: pointer; }
+.card button:disabled { opacity: .6; cursor: wait; }

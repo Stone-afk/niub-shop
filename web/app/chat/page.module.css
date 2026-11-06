@@ -299,6 +299,13 @@
   font-weight: 800;
 }
 
+.orderLink {
+  display: inline-block;
+  margin-top: 12px;
+  color: #9a4520;
+  font-weight: 700;
+}
+
 .inStock {
   background: #e4f1e8;
   color: #28593c;

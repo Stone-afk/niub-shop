@@ -204,3 +204,44 @@ describe("consumeChatStream recommendations", () => {
     ).rejects.toThrow("Invalid chat stream");
   });
 });
+
+describe("consumeChatStream orders", () => {
+  it("emits a validated order event before done", async () => {
+    const orders: Array<{ order_id: string; preview_path: string; status: string }> = [];
+
+    await consumeChatStream(
+      sseResponse([
+        'event: recommendations\ndata: {"product_ids":[]}\n\n',
+        'event: order\ndata: {"order_id":"ord-1","preview_path":"/orders/ord-1/preview","status":"pending_payment"}\n\n',
+        "event: done\ndata: {}\n\n",
+      ]),
+      () => undefined,
+      {
+        requireRecommendations: true,
+        onOrder: (order) => orders.push(order),
+      },
+    );
+
+    expect(orders).toEqual([
+      {
+        order_id: "ord-1",
+        preview_path: "/orders/ord-1/preview",
+        status: "pending_payment",
+      },
+    ]);
+  });
+
+  it("rejects malformed order metadata", async () => {
+    await expect(
+      consumeChatStream(
+        sseResponse([
+          'event: recommendations\ndata: {"product_ids":[]}\n\n',
+          'event: order\ndata: {"order_id":"","preview_path":"/bad","status":"paid"}\n\n',
+          "event: done\ndata: {}\n\n",
+        ]),
+        () => undefined,
+        { requireRecommendations: true },
+      ),
+    ).rejects.toThrow("Invalid chat stream");
+  });
+});

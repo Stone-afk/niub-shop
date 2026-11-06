@@ -48,6 +48,7 @@ class Turn:
     recommended_product_ids: tuple[str, ...] = ()
     recommended_product_sources: tuple[str, ...] = ()
     plan_state: dict[str, object] | None = None
+    orders: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,16 @@ class ConversationRepository:
                         updated_at TEXT NOT NULL,
                         FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE CASCADE
                     );
+                    CREATE TABLE IF NOT EXISTS turn_orders (
+                        turn_id TEXT NOT NULL,
+                        order_id TEXT NOT NULL,
+                        preview_path TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        position INTEGER NOT NULL CHECK(position >= 0),
+                        PRIMARY KEY(turn_id, order_id),
+                        UNIQUE(turn_id, position),
+                        FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE CASCADE
+                    );
                     """
                 )
 
@@ -214,6 +225,12 @@ class ConversationRepository:
                 "(SELECT id FROM turns WHERE conversation_id = ?)",
                 (conversation_id,),
             ).fetchall()
+            order_rows = connection.execute(
+                "SELECT * FROM turn_orders WHERE turn_id IN "
+                "(SELECT id FROM turns WHERE conversation_id = ?) "
+                "ORDER BY turn_id, position",
+                (conversation_id,),
+            ).fetchall()
         recommendations: dict[str, list[tuple[str, str]]] = {}
         for recommendation in recommendation_rows:
             recommendations.setdefault(recommendation["turn_id"], []).append(
@@ -223,6 +240,15 @@ class ConversationRepository:
             plan["turn_id"]: json.loads(plan["state_json"])
             for plan in plan_rows
         }
+        orders: dict[str, list[dict[str, str]]] = {}
+        for order in order_rows:
+            orders.setdefault(order["turn_id"], []).append(
+                {
+                    "order_id": order["order_id"],
+                    "preview_path": order["preview_path"],
+                    "status": order["status"],
+                }
+            )
         return Conversation(
             id=row["id"],
             user_id=row["user_id"],
@@ -235,6 +261,7 @@ class ConversationRepository:
                     tuple(product_id for product_id, _source in recommendations.get(item["id"], ())),
                     tuple(source for _product_id, source in recommendations.get(item["id"], ())),
                     plans.get(item["id"]),
+                    tuple(orders.get(item["id"], ())),
                 )
                 for item in turn_rows
             ),
@@ -295,6 +322,7 @@ class ConversationRepository:
         recommended_product_sources: Sequence[str] = (),
         plan_state: PlanState | None = None,
         plan_version: int = 1,
+        orders: Sequence[dict[str, str]] = (),
     ) -> Turn:
         if not assistant_content:
             raise ValueError("assistant content must not be empty")
@@ -333,6 +361,7 @@ class ConversationRepository:
                 "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
             )
             connection.execute("DELETE FROM turn_plans WHERE turn_id = ?", (turn_id,))
+            connection.execute("DELETE FROM turn_orders WHERE turn_id = ?", (turn_id,))
             connection.executemany(
                 """INSERT INTO turn_recommendations
                    (turn_id, product_id, position) VALUES (?, ?, ?)""",
@@ -372,10 +401,31 @@ class ConversationRepository:
                         now,
                     ),
                 )
+            connection.executemany(
+                """INSERT INTO turn_orders
+                   (turn_id, order_id, preview_path, status, position)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    (
+                        turn_id,
+                        order["order_id"],
+                        order["preview_path"],
+                        order["status"],
+                        position,
+                    )
+                    for position, order in enumerate(orders)
+                ),
+            )
             row = connection.execute(
                 "SELECT * FROM turns WHERE id = ?", (turn_id,)
             ).fetchone()
-        return self._turn(row, product_ids, sources, plan_state.model_dump(mode="json") if plan_state else None)
+        return self._turn(
+            row,
+            product_ids,
+            sources,
+            plan_state.model_dump(mode="json") if plan_state else None,
+            tuple(orders),
+        )
 
     def fail_turn(
         self,
@@ -419,6 +469,7 @@ class ConversationRepository:
                     "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
                 )
                 connection.execute("DELETE FROM turn_plans WHERE turn_id = ?", (turn_id,))
+                connection.execute("DELETE FROM turn_orders WHERE turn_id = ?", (turn_id,))
                 connection.execute(
                     """UPDATE turns SET status = 'pending', assistant_content = NULL,
                        error_code = NULL, updated_at = ? WHERE id = ?""",
@@ -483,6 +534,10 @@ class ConversationRepository:
                 "DELETE FROM turn_plans WHERE turn_id = ?",
                 ((row["id"],) for row in pending_ids),
             )
+            connection.executemany(
+                "DELETE FROM turn_orders WHERE turn_id = ?",
+                ((row["id"],) for row in pending_ids),
+            )
             cursor = connection.execute(
                 """UPDATE turns SET status = 'failed', assistant_content = NULL,
                    error_code = 'service_restarted', updated_at = ?
@@ -537,6 +592,7 @@ class ConversationRepository:
                     "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
                 )
                 connection.execute("DELETE FROM turn_plans WHERE turn_id = ?", (turn_id,))
+                connection.execute("DELETE FROM turn_orders WHERE turn_id = ?", (turn_id,))
             connection.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (now, conversation_id),
@@ -564,6 +620,7 @@ class ConversationRepository:
         recommended_product_ids: tuple[str, ...] = (),
         recommended_product_sources: tuple[str, ...] = (),
         plan_state: dict[str, object] | None = None,
+        orders: tuple[dict[str, str], ...] = (),
     ) -> Turn:
         return Turn(
             id=row["id"],
@@ -577,6 +634,7 @@ class ConversationRepository:
             recommended_product_ids=recommended_product_ids,
             recommended_product_sources=recommended_product_sources,
             plan_state=plan_state,
+            orders=orders,
         )
 
     @staticmethod

@@ -1,7 +1,7 @@
 """Validated HTTP client for the mall service."""
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 class MallServiceUnavailable(RuntimeError):
     """The mall service did not return a usable product catalog."""
+
+
+class MallOrderRejected(RuntimeError):
+    """The mall rejected an otherwise well-formed order request."""
 
 
 Availability = Literal["in_stock", "out_of_stock"]
@@ -62,6 +66,21 @@ class CandidateProducts:
     items: tuple[ProductData, ...]
 
 
+OrderStatus = Literal["pending_payment", "paid"]
+
+
+@dataclass(frozen=True)
+class OrderData:
+    id: str
+    user_id: int
+    status: OrderStatus
+    items: tuple[dict[str, Any], ...]
+    subtotal_cents: int
+    total_cents: int
+    currency: str
+    created_at: str
+
+
 class _ProductPayload(BaseModel):
     model_config = ConfigDict(strict=True)
 
@@ -103,6 +122,19 @@ class _ExternalProfilePayload(BaseModel):
 
 class _RecommendationPayload(_ProductListPayload):
     source: Literal["organic", "sponsored"]
+
+
+class _OrderPayload(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: str
+    user_id: int
+    status: OrderStatus
+    items: list[dict[str, Any]]
+    subtotal_cents: int
+    total_cents: int
+    currency: str
+    created_at: str
 
 
 class MallClient:
@@ -177,6 +209,30 @@ class MallClient:
         )
         return CandidateProducts("sponsored", tuple(self._products(payload.items)))
 
+    def create_order(
+        self,
+        items: Sequence[dict[str, int | str]],
+        client_request_id: str,
+    ) -> OrderData:
+        try:
+            payload = self._post_json(
+                "/orders",
+                {"items": list(items), "client_request_id": client_request_id},
+                _OrderPayload,
+            )
+        except MallOrderRejected:
+            raise
+        return OrderData(
+            id=payload.id,
+            user_id=payload.user_id,
+            status=payload.status,
+            items=tuple(dict(item) for item in payload.items),
+            subtotal_cents=payload.subtotal_cents,
+            total_cents=payload.total_cents,
+            currency=payload.currency,
+            created_at=payload.created_at,
+        )
+
     def _get_json(self, path: str, schema: type[BaseModel]) -> BaseModel:
         try:
             with httpx.Client(
@@ -187,6 +243,32 @@ class MallClient:
                 response = client.get(f"{self._base_url}{path}")
                 response.raise_for_status()
                 return schema.model_validate(response.json())
+        except (httpx.HTTPError, ValueError, ValidationError) as error:
+            raise MallServiceUnavailable from error
+
+    def _post_json(
+        self,
+        path: str,
+        body: dict[str, object],
+        schema: type[BaseModel],
+    ) -> BaseModel:
+        try:
+            with httpx.Client(
+                transport=self._transport,
+                timeout=self._timeout,
+                trust_env=False,
+            ) as client:
+                response = client.post(f"{self._base_url}{path}", json=body)
+                response.raise_for_status()
+                return schema.model_validate(response.json())
+        except httpx.HTTPStatusError as error:
+            if 400 <= error.response.status_code < 500:
+                try:
+                    detail = error.response.json()
+                except ValueError:
+                    detail = {"code": "order_rejected"}
+                raise MallOrderRejected(str(detail)) from error
+            raise MallServiceUnavailable from error
         except (httpx.HTTPError, ValueError, ValidationError) as error:
             raise MallServiceUnavailable from error
 

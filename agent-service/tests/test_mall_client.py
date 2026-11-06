@@ -5,7 +5,9 @@ from agent_service.mall_client import (
     CandidateProducts,
     ExternalProfileData,
     MallClient,
+    MallOrderRejected,
     MallServiceUnavailable,
+    OrderData,
     ProductData,
     UserContextData,
 )
@@ -178,3 +180,75 @@ def test_client_reads_user_context_and_both_recommendation_sources() -> None:
         ),)
     )
     assert client.get_ad_recommendations(1).source == "sponsored"
+
+
+def test_client_creates_order_with_strict_snapshot() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/orders"
+        assert request.headers["content-type"] == "application/json"
+        return httpx.Response(
+            201,
+            json={
+                "id": "ord-1",
+                "user_id": 1,
+                "status": "pending_payment",
+                "items": [
+                    {
+                        "product_id": "ceramic-mug",
+                        "name": "陶瓷马克杯 / Ceramic Mug",
+                        "description": "A mug",
+                        "quantity": 1,
+                        "unit_price_cents": 39000,
+                        "line_total_cents": 39000,
+                        "currency": "TWD",
+                    }
+                ],
+                "subtotal_cents": 39000,
+                "total_cents": 39000,
+                "currency": "TWD",
+                "created_at": "2026-11-06T10:00:00+00:00",
+            },
+        )
+
+    result = MallClient(
+        "http://mall.test", transport=httpx.MockTransport(handler)
+    ).create_order(
+        [{"product_id": "ceramic-mug", "quantity": 1}],
+        "intent-1",
+    )
+
+    assert result == OrderData(
+        id="ord-1",
+        user_id=1,
+        status="pending_payment",
+        items=(
+            {
+                "product_id": "ceramic-mug",
+                "name": "陶瓷马克杯 / Ceramic Mug",
+                "description": "A mug",
+                "quantity": 1,
+                "unit_price_cents": 39000,
+                "line_total_cents": 39000,
+                "currency": "TWD",
+            },
+        ),
+        subtotal_cents=39000,
+        total_cents=39000,
+        currency="TWD",
+        created_at="2026-11-06T10:00:00+00:00",
+    )
+
+
+def test_client_preserves_order_rejection_for_out_of_stock() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            409,
+            json={"error": {"code": "out_of_stock", "message": "wool-scarf"}},
+        )
+    )
+
+    with pytest.raises(MallOrderRejected, match="out_of_stock"):
+        MallClient("http://mall.test", transport=transport).create_order(
+            [{"product_id": "wool-scarf", "quantity": 1}], "intent-4"
+        )

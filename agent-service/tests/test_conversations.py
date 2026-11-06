@@ -39,8 +39,31 @@ def test_initializes_sqlite_pragmas_and_schema(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
-    assert {"conversations", "turns", "turn_recommendations"} <= tables
+    assert {"conversations", "turns", "turn_recommendations", "turn_orders"} <= tables
     assert "one_pending_turn_per_conversation" in indexes
+
+
+def test_persists_multiple_order_links_on_one_turn(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    conversation = repo.create_conversation(1)
+    turn = repo.create_turn(1, conversation.id, "我要买两个")
+
+    repo.complete_turn(
+        1,
+        conversation.id,
+        turn.id,
+        "已创建两个订单",
+        orders=[
+            {"order_id": "ord-1", "preview_path": "/orders/ord-1/preview", "status": "pending_payment"},
+            {"order_id": "ord-2", "preview_path": "/orders/ord-2/preview", "status": "pending_payment"},
+        ],
+    )
+
+    stored = repo.get_conversation(1, conversation.id).turns[0]
+    assert stored.orders == (
+        {"order_id": "ord-1", "preview_path": "/orders/ord-1/preview", "status": "pending_payment"},
+        {"order_id": "ord-2", "preview_path": "/orders/ord-2/preview", "status": "pending_payment"},
+    )
 
 
 def test_creates_lists_and_reads_fixed_user_conversation(tmp_path: Path) -> None:

@@ -232,3 +232,6 @@ web/.next/
 
 # Local Agent SQLite data
 /agent-service/data/
+
+# Local Mall SQLite data
+/mall-service/data/

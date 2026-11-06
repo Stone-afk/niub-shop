@@ -32,6 +32,13 @@ export interface ConversationTurn {
   updated_at: string;
   recommended_product_ids: string[];
   recommended_product_sources?: string[];
+  orders?: OrderLink[];
+}
+
+export interface OrderLink {
+  order_id: string;
+  preview_path: string;
+  status: "pending_payment" | "paid";
 }
 
 export interface ConversationSummary {

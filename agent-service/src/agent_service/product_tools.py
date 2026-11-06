@@ -12,7 +12,7 @@ from pydantic import (
     model_validator,
 )
 
-from .mall_client import MallClient, ProductData
+from .mall_client import MallClient, ProductData, OrderData
 
 
 SearchSort = Literal["relevance", "price_asc", "price_desc"]
@@ -112,6 +112,11 @@ class MallProductSearchTool:
     async def get_ad_recommendations(self, user_id: int):
         return await anyio.to_thread.run_sync(
             self._client.get_ad_recommendations, user_id
+        )
+
+    async def create_order(self, items, client_request_id: str) -> OrderData:
+        return await anyio.to_thread.run_sync(
+            self._client.create_order, items, client_request_id
         )
 
 
