@@ -60,6 +60,7 @@ class RecommendationResult:
     product_ids: tuple[str, ...]
     product_sources: tuple[str, ...] = field(default=(), compare=False)
     plan_state: PlanState | None = field(default=None, compare=False)
+    plan_version: int = field(default=0, compare=False)
 
 
 class _RecommendationSubmission(BaseModel):
@@ -626,6 +627,7 @@ class RecommendationAgent:
                 product_ids=context.submission.product_ids,
                 product_sources=context.submission.product_sources,
                 plan_state=context.plan_state,
+                plan_version=len(context.plan_history),
             )
         if context.searched:
             raise RecommendationInvalid("Recommendation response is invalid")
@@ -639,6 +641,7 @@ class RecommendationAgent:
             answer=answer,
             product_ids=(),
             plan_state=context.plan_state,
+            plan_version=len(context.plan_history),
         )
 
 
