@@ -177,16 +177,16 @@ The persisted conversation API uses the OpenAI Agents SDK to manage the ReAct lo
 
 ```text
 Agents SDK Runner 执行 Agent / Agents SDK Runner executes the Agent
-  → 模型加载 Agent 内部画像、外部画像和用户上下文 / model loads Agent-owned profile, external profile, and user context
-  → 模型查询商城自然推荐与广告推荐 / model loads organic and sponsored candidates
-  → 必要时调用 search_products 做结构化筛选 / optionally narrows candidates with search_products
-  → SDK 将工具结果回传模型继续推理 / SDK returns tool results for another reasoning step
+  → 模型调用 update_plan 创建或更新显式计划 / model calls update_plan to create or update an explicit plan
+  → 模型按 Plan State 自主选择工具 / model chooses the next tool from Plan State
+  → 代码执行模型选择的工具并回传结果 / code executes the selected tool and returns its result
+  → 模型更新 Plan State，决定继续、重试、跳过、重规划或结束 / model updates Plan State to continue, retry, skip, replan, or finish
   → 模型调用 submit_product_recommendation
   → Agent 校验回答与商品 ID / validates answer and product IDs
   → 原子保存并发送 SSE / atomically persists and emits SSE
 ```
 
-`get_agent_profile` 返回 Agent 服务内部维护的画像；`get_external_profile` 返回推荐平台画像 mock；`get_user_context` 返回结构化浏览、订单和购物车记录，并支持新用户空数组；`get_product_recommendations` 返回商城自然推荐；`get_ad_recommendations` 返回带 `sponsored` 来源的广告推荐。任意单个来源为空或不可用时，Agent 会继续使用其它来源。最近购买过的商品会在工具层过滤，避免直接重复推荐。`search_products` 支持可选的 `keyword`、`category`、`min_price_cents`、`max_price_cents`、`sort`（`relevance | price_asc | price_desc`）和 `limit`（1–10，默认 5）。模型每轮最多搜索三次，可调整条件后再次查询。未知字段、负数价格、倒置区间和超限数量都会在访问商城前被拒绝。
+`update_plan` 接收模型提交的 Plan State，校验后保存为当前运行计划；代码不会根据 `next_action` 自动调用工具，也不会自动完成步骤。`get_agent_profile` 返回 Agent 服务内部维护的画像；`get_external_profile` 返回推荐平台画像 mock；`get_user_context` 返回结构化浏览、订单和购物车记录，并支持新用户空数组；`get_product_recommendations` 返回商城自然推荐；`get_ad_recommendations` 返回带 `sponsored` 来源的广告推荐。任意单个来源为空或不可用时，Agent 会继续使用其它来源。最近购买过的商品会在工具层过滤，避免直接重复推荐。`search_products` 支持可选的 `keyword`、`category`、`min_price_cents`、`max_price_cents`、`sort`（`relevance | price_asc | price_desc`）和 `limit`（1–10，默认 5）。模型每轮最多搜索三次，可调整条件后再次查询。未知字段、负数价格、倒置区间和超限数量都会在访问商城前被拒绝。
 
 `search_products` accepts optional `keyword`, `category`, `min_price_cents`, `max_price_cents`, `sort` (`relevance | price_asc | price_desc`), and `limit` (1–10, default 5). The model may refine its filters but can search at most three times per turn. Unknown fields, negative prices, inverted ranges, and invalid limits are rejected before Mall access.
 
@@ -204,9 +204,9 @@ event: recommendations    # {"product_ids":[...],"product_sources":["organic", "
 event: done               # {}
 ```
 
-回答、有序商品 ID 和商品来源在同一个 SQLite 事务中保存。刷新或切换历史会话后，Web 从详情接口恢复 ID 与来源，并用当前 `/api/products` 目录渲染只读卡片：名称、价格、描述、双语库存状态，以及广告标识“广告 / Sponsored”。目录中已不存在的历史 ID 会显示“商品暂不可用 / Product unavailable”，不会伪造商品信息。目录加载失败不影响文字对话。
+回答、有序商品 ID、商品来源和最新 Plan State 在同一个 SQLite 事务中保存。刷新或切换历史会话后，Web 从详情接口恢复 ID 与来源，并用当前 `/api/products` 目录渲染只读卡片：名称、价格、描述、双语库存状态，以及广告标识“广告 / Sponsored”。Plan State 当前仅作为后端会话详情元数据，不修改 Web 布局。目录中已不存在的历史 ID 会显示“商品暂不可用 / Product unavailable”，不会伪造商品信息。目录加载失败不影响文字对话。
 
-The answer, ordered product IDs, and product sources are stored in one SQLite transaction. After refresh or history selection, Web restores the IDs and sources from conversation detail and renders read-only cards from the current `/api/products` catalog: name, price, description, bilingual availability, and a “广告 / Sponsored” badge. A historical ID missing from the catalog shows “商品暂不可用 / Product unavailable” instead of invented data. Catalog loading failures do not block text chat.
+The answer, ordered product IDs, product sources, and latest Plan State are stored in one SQLite transaction. After refresh or history selection, Web restores the IDs and sources from conversation detail and renders read-only cards from the current `/api/products` catalog: name, price, description, bilingual availability, and a “广告 / Sponsored” badge. Plan State is backend conversation metadata for now and does not change the Web layout. A historical ID missing from the catalog shows “商品暂不可用 / Product unavailable” instead of invented data. Catalog loading failures do not block text chat.
 
 模型协议、工具参数、商城访问或最终校验失败时，本轮标记为 failed，不保存部分回答或商品 ID；页面允许重试最新失败轮次。所有公开错误使用稳定代码，且不包含模型响应、工具正文或密钥。
 

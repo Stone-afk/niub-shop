@@ -102,14 +102,14 @@ def _search_enabled(
     run_context: RunContextWrapper[RecommendationRunContext],
     _agent: Any,
 ) -> bool:
-    return not run_context.context.found_products
+    return True
 
 
 def _submit_enabled(
     run_context: RunContextWrapper[RecommendationRunContext],
     _agent: Any,
 ) -> bool:
-    return run_context.context.searched
+    return True
 
 
 async def _search_products(
@@ -125,14 +125,6 @@ async def _search_products(
 
     state = run_context.context
     async with state.search_lock:
-        if state.found_products:
-            return json.dumps(
-                {
-                    "items": [],
-                    "note": "Products were already found. Submit the recommendation now.",
-                },
-                ensure_ascii=False,
-            )
         if state.search_count >= state.max_search_calls:
             raise ToolLoopExceeded("Product search limit exceeded")
         try:

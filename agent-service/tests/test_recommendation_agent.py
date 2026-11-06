@@ -89,7 +89,8 @@ async def test_sdk_runner_returns_plain_text_without_searching() -> None:
         DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH
     )
     assert [registered.name for registered in model.first_call.tools] == [
-        "search_products"
+        "search_products",
+        "submit_product_recommendation",
     ]
 
 
@@ -231,7 +232,8 @@ async def test_sdk_runner_searches_then_submits_grounded_recommendation() -> Non
     assert tool.filters[0].keyword == "mug"
     assert len(model.calls) == 2
     assert [registered.name for registered in model.calls[1].tools] == [
-        "submit_product_recommendation"
+        "search_products",
+        "submit_product_recommendation",
     ]
     assert any(
         entry.get("type") == "function_call_output"
@@ -290,7 +292,8 @@ async def test_empty_search_can_refine_before_submitting() -> None:
         "submit_product_recommendation",
     ]
     assert [registered.name for registered in model.calls[2].tools] == [
-        "submit_product_recommendation"
+        "search_products",
+        "submit_product_recommendation",
     ]
 
 
@@ -334,7 +337,7 @@ async def test_searches_are_serialized_and_stop_after_products_are_found() -> No
     result = await RecommendationAgent(model, tool).generate([])
 
     assert result == RecommendationResult("推荐这件商品", ("one",))
-    assert len(tool.filters) == 1
+    assert len(tool.filters) == 2
 
 
 @pytest.mark.anyio
