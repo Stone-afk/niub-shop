@@ -22,6 +22,7 @@ from agent_service.recommendation_agent import (
     RecommendationInvalid,
     RecommendationResult,
 )
+from agent_service.plan_state import PlanState
 
 
 class FakeModelStream:
@@ -669,6 +670,41 @@ async def test_send_turn_emits_and_exposes_persisted_recommendations(
         "ceramic-mug",
         "canvas-tote",
     ]
+
+
+@pytest.mark.anyio
+async def test_conversation_detail_exposes_latest_plan_state(tmp_path: Path) -> None:
+    plan = PlanState.model_validate(
+        {
+            "plan_id": "plan-api",
+            "goal": "推荐商品",
+            "status": "completed",
+            "current_step_id": None,
+            "steps": [
+                {
+                    "id": "recommend",
+                    "title": "输出推荐",
+                    "status": "completed",
+                    "depends_on": [],
+                }
+            ],
+            "next_action": "submit_product_recommendation",
+            "reason": "已完成",
+        }
+    )
+    agent = FakeRecommendationAgent(RecommendationResult("完成", (), (), plan))
+    client, repository = make_persistent_client(
+        tmp_path, RecordingProvider(), recommendation_agent=agent
+    )
+    conversation = repository.create_conversation(1)
+
+    async with client:
+        await client.post(
+            f"/conversations/{conversation.id}/turns", json={"content": "推荐商品"}
+        )
+        detail = await client.get(f"/conversations/{conversation.id}")
+
+    assert detail.json()["turns"][0]["plan_state"]["plan_id"] == "plan-api"
 
 
 @pytest.mark.anyio
