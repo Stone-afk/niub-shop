@@ -3,6 +3,7 @@ import pytest
 
 from agent_service.mall_client import (
     CandidateProducts,
+    ExternalProfileData,
     MallClient,
     MallServiceUnavailable,
     ProductData,
@@ -115,10 +116,40 @@ def test_client_reads_user_context_and_both_recommendation_sources() -> None:
                 200,
                 json={
                     "user_id": 1,
-                    "browsing_product_ids": ["ceramic-mug"],
-                    "purchased_product_ids": ["canvas-tote"],
-                    "cart_product_ids": ["ceramic-mug"],
-                    "profile": {"favorite_category": "drinkware"},
+                    "available": True,
+                    "is_new_user": False,
+                    "browsing": [
+                        {
+                            "product_id": "ceramic-mug",
+                            "viewed_at": "2026-11-06T10:00:00Z",
+                            "count": 2,
+                        }
+                    ],
+                    "orders": [
+                        {
+                            "product_id": "canvas-tote",
+                            "ordered_at": "2026-10-20T10:00:00Z",
+                            "quantity": 1,
+                            "status": "completed",
+                        }
+                    ],
+                    "cart": [
+                        {
+                            "product_id": "ceramic-mug",
+                            "added_at": "2026-11-06T09:00:00Z",
+                            "quantity": 1,
+                        }
+                    ],
+                },
+            )
+        if request.url.path.endswith("/external-profile"):
+            return httpx.Response(
+                200,
+                json={
+                    "user_id": 1,
+                    "source": "recommendation-platform",
+                    "available": True,
+                    "profile": {"interest_tags": ["coffee"]},
                 },
             )
         source = "sponsored" if "/ads/" in request.url.path else "organic"
@@ -127,8 +158,17 @@ def test_client_reads_user_context_and_both_recommendation_sources() -> None:
     client = MallClient("http://mall.test", transport=httpx.MockTransport(handler))
 
     assert client.get_user_context(1) == UserContextData(
-        1, ("ceramic-mug",), ("canvas-tote",), ("ceramic-mug",),
-        {"favorite_category": "drinkware"},
+        1,
+        True,
+        False,
+        ({"product_id": "ceramic-mug", "viewed_at": "2026-11-06T10:00:00Z", "count": 2},),
+        ({"product_id": "canvas-tote", "ordered_at": "2026-10-20T10:00:00Z", "quantity": 1, "status": "completed"},),
+        ({"product_id": "ceramic-mug", "added_at": "2026-11-06T09:00:00Z", "quantity": 1},),
+    )
+    assert client.get_user_context(1).purchased_product_ids == ("canvas-tote",)
+    assert client.get_user_context(1).cart_product_ids == ("ceramic-mug",)
+    assert client.get_external_profile(1) == ExternalProfileData(
+        1, "recommendation-platform", True, {"interest_tags": ["coffee"]}
     )
     assert client.get_recommendations(1) == CandidateProducts(
         "organic", (ProductData(

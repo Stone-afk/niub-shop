@@ -21,6 +21,7 @@ type StreamView = {
   showUser: boolean;
   productIds: string[];
   productSources: string[];
+  recommendationsReceived: boolean;
 };
 
 function formatPrice(product: Product): string {
@@ -38,13 +39,21 @@ function ProductCards({
   sources = [],
   catalog,
   catalogError,
+  showEmpty = false,
 }: {
   ids: string[];
   sources?: string[];
   catalog: Map<string, Product> | null;
   catalogError: boolean;
+  showEmpty?: boolean;
 }) {
-  if (ids.length === 0) return null;
+  if (ids.length === 0) {
+    return showEmpty ? (
+      <p className={styles.productState}>
+        暂时没有找到合适的商品 / No suitable products found. 你可以尝试其他平台 / You may try other platforms.
+      </p>
+    ) : null;
+  }
   if (catalogError) {
     return <p className={styles.productState}>商品信息加载失败 / Failed to load products</p>;
   }
@@ -184,12 +193,20 @@ export default function ChatPage() {
   function setRecommendations(
     conversationId: string,
     productIds: string[],
-    productSources: string[],
+    productSources: string[] = [],
   ) {
     setStreams((current) => {
       const stream = current[conversationId];
       if (!stream) return current;
-      return { ...current, [conversationId]: { ...stream, productIds, productSources } };
+      return {
+        ...current,
+        [conversationId]: {
+          ...stream,
+          productIds,
+          productSources,
+          recommendationsReceived: true,
+        },
+      };
     });
   }
 
@@ -223,6 +240,7 @@ export default function ChatPage() {
           showUser: true,
           productIds: [],
           productSources: [],
+          recommendationsReceived: false,
         },
       }));
       await streamConversationTurn(
@@ -266,6 +284,7 @@ export default function ChatPage() {
         showUser: false,
         productIds: [],
         productSources: [],
+        recommendationsReceived: false,
       },
     }));
     try {
@@ -372,6 +391,7 @@ export default function ChatPage() {
                         sources={turn.recommended_product_sources ?? []}
                         catalog={catalog}
                         catalogError={catalogError}
+                        showEmpty
                       />
                     </>
                   )}
@@ -405,6 +425,7 @@ export default function ChatPage() {
                     sources={stream.productSources}
                     catalog={catalog}
                     catalogError={catalogError}
+                    showEmpty={stream.recommendationsReceived}
                   />
                 </div>
               )}

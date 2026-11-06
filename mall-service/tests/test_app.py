@@ -91,8 +91,17 @@ async def test_mock_user_context_and_recommendation_sources_are_available(
     context = await client.get("/users/1/context")
     organic = await client.get("/users/1/recommendations")
     ads = await client.get("/users/1/ads/recommendations")
+    external_profile = await client.get("/users/1/external-profile")
 
-    assert context.status_code == organic.status_code == ads.status_code == 200
-    assert context.json()["purchased_product_ids"] == ["canvas-tote"]
+    assert (
+        context.status_code
+        == organic.status_code
+        == ads.status_code
+        == external_profile.status_code
+        == 200
+    )
+    assert context.json()["orders"][0]["product_id"] == "canvas-tote"
+    assert context.json()["browsing"][0]["product_id"] == "ceramic-mug"
     assert organic.json()["source"] == "organic"
     assert ads.json()["source"] == "sponsored"
+    assert external_profile.json()["source"] == "recommendation-platform"

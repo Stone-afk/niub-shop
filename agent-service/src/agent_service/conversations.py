@@ -269,8 +269,8 @@ class ConversationRepository:
         if not assistant_content:
             raise ValueError("assistant content must not be empty")
         product_ids = tuple(recommended_product_ids)
-        if len(product_ids) > 5:
-            raise ValueError("at most five recommended product IDs are allowed")
+        if len(product_ids) > 3:
+            raise ValueError("at most three recommended product IDs are allowed")
         if any(not isinstance(product_id, str) or not product_id for product_id in product_ids):
             raise ValueError("recommended product IDs must be non-empty strings")
         if len(set(product_ids)) != len(product_ids):

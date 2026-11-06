@@ -220,7 +220,7 @@ class ConversationService:
             not isinstance(result.answer, str)
             or not result.answer
             or len(result.answer) > 20000
-            or len(result.product_ids) > 5
+            or len(result.product_ids) > 3
             or len(set(result.product_ids)) != len(result.product_ids)
             or any(
                 not isinstance(product_id, str) or not product_id
@@ -234,6 +234,7 @@ class ConversationService:
                 source not in {"organic", "sponsored"}
                 for source in result.product_sources
             )
+            or result.product_sources.count("sponsored") > 1
         ):
             raise RecommendationInvalid("Recommendation response is invalid")
 
