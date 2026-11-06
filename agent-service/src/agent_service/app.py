@@ -352,6 +352,7 @@ def create_app(
                     "recommended_product_sources": list(
                         turn.recommended_product_sources
                     ),
+                    "plan_state": turn.plan_state,
                 }
                 for turn in item.turns
             ],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -10,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 from uuid import uuid4
+
+from .plan_state import PlanState
 
 
 TurnStatus = Literal["pending", "completed", "failed"]
@@ -44,6 +47,7 @@ class Turn:
     updated_at: str
     recommended_product_ids: tuple[str, ...] = ()
     recommended_product_sources: tuple[str, ...] = ()
+    plan_state: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +139,20 @@ class ConversationRepository:
                         PRIMARY KEY (turn_id, product_id),
                         FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE CASCADE
                     );
+                    CREATE TABLE IF NOT EXISTS turn_plans (
+                        turn_id TEXT PRIMARY KEY,
+                        plan_id TEXT NOT NULL,
+                        goal TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN (
+                            'draft', 'in_progress', 'completed', 'blocked', 'cancelled'
+                        )),
+                        current_step_id TEXT,
+                        state_json TEXT NOT NULL,
+                        version INTEGER NOT NULL CHECK(version >= 1),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE CASCADE
+                    );
                     """
                 )
 
@@ -191,11 +209,20 @@ class ConversationRepository:
                    ORDER BY r.turn_id, r.position""",
                 (conversation_id,),
             ).fetchall()
+            plan_rows = connection.execute(
+                "SELECT * FROM turn_plans WHERE turn_id IN "
+                "(SELECT id FROM turns WHERE conversation_id = ?)",
+                (conversation_id,),
+            ).fetchall()
         recommendations: dict[str, list[tuple[str, str]]] = {}
         for recommendation in recommendation_rows:
             recommendations.setdefault(recommendation["turn_id"], []).append(
                 (recommendation["product_id"], recommendation["source"])
             )
+        plans = {
+            plan["turn_id"]: json.loads(plan["state_json"])
+            for plan in plan_rows
+        }
         return Conversation(
             id=row["id"],
             user_id=row["user_id"],
@@ -207,6 +234,7 @@ class ConversationRepository:
                     item,
                     tuple(product_id for product_id, _source in recommendations.get(item["id"], ())),
                     tuple(source for _product_id, source in recommendations.get(item["id"], ())),
+                    plans.get(item["id"]),
                 )
                 for item in turn_rows
             ),
@@ -265,6 +293,7 @@ class ConversationRepository:
         assistant_content: str,
         recommended_product_ids: Sequence[str] = (),
         recommended_product_sources: Sequence[str] = (),
+        plan_state: PlanState | None = None,
     ) -> Turn:
         if not assistant_content:
             raise ValueError("assistant content must not be empty")
@@ -300,6 +329,7 @@ class ConversationRepository:
             connection.execute(
                 "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
             )
+            connection.execute("DELETE FROM turn_plans WHERE turn_id = ?", (turn_id,))
             connection.executemany(
                 """INSERT INTO turn_recommendations
                    (turn_id, product_id, position) VALUES (?, ?, ?)""",
@@ -320,10 +350,29 @@ class ConversationRepository:
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (now, conversation_id),
             )
+            if plan_state is not None:
+                state = plan_state.model_dump(mode="json", exclude_none=False)
+                connection.execute(
+                    """INSERT INTO turn_plans
+                       (turn_id, plan_id, goal, status, current_step_id,
+                        state_json, version, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        turn_id,
+                        plan_state.plan_id,
+                        plan_state.goal,
+                        plan_state.status,
+                        plan_state.current_step_id,
+                        json.dumps(state, ensure_ascii=False),
+                        1,
+                        now,
+                        now,
+                    ),
+                )
             row = connection.execute(
                 "SELECT * FROM turns WHERE id = ?", (turn_id,)
             ).fetchone()
-        return self._turn(row, product_ids, sources)
+        return self._turn(row, product_ids, sources, plan_state.model_dump(mode="json") if plan_state else None)
 
     def fail_turn(
         self,
@@ -366,6 +415,7 @@ class ConversationRepository:
                 connection.execute(
                     "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
                 )
+                connection.execute("DELETE FROM turn_plans WHERE turn_id = ?", (turn_id,))
                 connection.execute(
                     """UPDATE turns SET status = 'pending', assistant_content = NULL,
                        error_code = NULL, updated_at = ? WHERE id = ?""",
@@ -426,6 +476,10 @@ class ConversationRepository:
                 "DELETE FROM turn_recommendation_sources WHERE turn_id = ?",
                 ((row["id"],) for row in pending_ids),
             )
+            connection.executemany(
+                "DELETE FROM turn_plans WHERE turn_id = ?",
+                ((row["id"],) for row in pending_ids),
+            )
             cursor = connection.execute(
                 """UPDATE turns SET status = 'failed', assistant_content = NULL,
                    error_code = 'service_restarted', updated_at = ?
@@ -479,6 +533,7 @@ class ConversationRepository:
                 connection.execute(
                     "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
                 )
+                connection.execute("DELETE FROM turn_plans WHERE turn_id = ?", (turn_id,))
             connection.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (now, conversation_id),
@@ -505,6 +560,7 @@ class ConversationRepository:
         row: sqlite3.Row,
         recommended_product_ids: tuple[str, ...] = (),
         recommended_product_sources: tuple[str, ...] = (),
+        plan_state: dict[str, object] | None = None,
     ) -> Turn:
         return Turn(
             id=row["id"],
@@ -517,6 +573,7 @@ class ConversationRepository:
             updated_at=row["updated_at"],
             recommended_product_ids=recommended_product_ids,
             recommended_product_sources=recommended_product_sources,
+            plan_state=plan_state,
         )
 
     @staticmethod

@@ -7,6 +7,7 @@ from agent_service.conversations import ConversationRepository
 from agent_service.providers import ModelProtocolError
 from agent_service.prompt_loader import PromptLoadError
 from agent_service.recommendation_agent import RecommendationInvalid, RecommendationResult
+from agent_service.plan_state import PlanState
 
 
 class FakeRecommendationAgent:
@@ -38,6 +39,27 @@ def make_repository(tmp_path: Path) -> ConversationRepository:
     return repository
 
 
+def make_plan() -> PlanState:
+    return PlanState.model_validate(
+        {
+            "plan_id": "plan-1",
+            "goal": "推荐商品",
+            "status": "completed",
+            "current_step_id": None,
+            "steps": [
+                {
+                    "id": "recommend",
+                    "title": "输出推荐",
+                    "status": "completed",
+                    "depends_on": [],
+                }
+            ],
+            "next_action": "submit_product_recommendation",
+            "reason": "已完成",
+        }
+    )
+
+
 @pytest.mark.anyio
 async def test_builds_model_context_from_persisted_completed_turns(
     tmp_path: Path,
@@ -61,6 +83,25 @@ async def test_builds_model_context_from_persisted_completed_turns(
     stored = repository.get_conversation(1, conversation.id).turns[-1]
     assert stored.status == "completed"
     assert stored.recommended_product_ids == ("new",)
+
+
+@pytest.mark.anyio
+async def test_persists_latest_plan_state_with_completed_turn(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    conversation = repository.create_conversation(1)
+    agent = FakeRecommendationAgent(
+        RecommendationResult("回答", (), (), make_plan())
+    )
+
+    stream = await ConversationService(repository, agent, None).open_turn(
+        1, conversation.id, "推荐商品"
+    )
+    [chunk async for chunk in stream]
+
+    stored = repository.get_conversation(1, conversation.id).turns[0]
+    assert stored.plan_state is not None
+    assert stored.plan_state["plan_id"] == "plan-1"
+    assert stored.plan_state["status"] == "completed"
 
 
 @pytest.mark.anyio
