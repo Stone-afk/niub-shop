@@ -20,3 +20,16 @@ class Product(BaseModel):
 
 class ProductList(BaseModel):
     items: list[Product]
+
+
+class UserContext(BaseModel):
+    user_id: int
+    browsing_product_ids: list[str]
+    purchased_product_ids: list[str]
+    cart_product_ids: list[str]
+    profile: dict[str, str]
+
+
+class RecommendationList(BaseModel):
+    items: list[Product]
+    source: str

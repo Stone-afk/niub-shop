@@ -43,6 +43,7 @@ class Turn:
     created_at: str
     updated_at: str
     recommended_product_ids: tuple[str, ...] = ()
+    recommended_product_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,13 @@ class ConversationRepository:
                         UNIQUE (turn_id, position),
                         FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE CASCADE
                     );
+                    CREATE TABLE IF NOT EXISTS turn_recommendation_sources (
+                        turn_id TEXT NOT NULL,
+                        product_id TEXT NOT NULL,
+                        source TEXT NOT NULL CHECK(source IN ('organic', 'sponsored')),
+                        PRIMARY KEY (turn_id, product_id),
+                        FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE CASCADE
+                    );
                     """
                 )
 
@@ -173,16 +181,20 @@ class ConversationRepository:
                 (conversation_id,),
             ).fetchall()
             recommendation_rows = connection.execute(
-                """SELECT r.turn_id, r.product_id FROM turn_recommendations r
+                """SELECT r.turn_id, r.product_id,
+                          COALESCE(s.source, 'organic') AS source
+                   FROM turn_recommendations r
+                   LEFT JOIN turn_recommendation_sources s
+                     ON s.turn_id = r.turn_id AND s.product_id = r.product_id
                    JOIN turns t ON t.id = r.turn_id
                    WHERE t.conversation_id = ?
                    ORDER BY r.turn_id, r.position""",
                 (conversation_id,),
             ).fetchall()
-        recommendations: dict[str, list[str]] = {}
+        recommendations: dict[str, list[tuple[str, str]]] = {}
         for recommendation in recommendation_rows:
             recommendations.setdefault(recommendation["turn_id"], []).append(
-                recommendation["product_id"]
+                (recommendation["product_id"], recommendation["source"])
             )
         return Conversation(
             id=row["id"],
@@ -191,7 +203,11 @@ class ConversationRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             turns=tuple(
-                self._turn(item, tuple(recommendations.get(item["id"], ())))
+                self._turn(
+                    item,
+                    tuple(product_id for product_id, _source in recommendations.get(item["id"], ())),
+                    tuple(source for _product_id, source in recommendations.get(item["id"], ())),
+                )
                 for item in turn_rows
             ),
         )
@@ -248,14 +264,24 @@ class ConversationRepository:
         turn_id: str,
         assistant_content: str,
         recommended_product_ids: Sequence[str] = (),
+        recommended_product_sources: Sequence[str] = (),
     ) -> Turn:
         if not assistant_content:
             raise ValueError("assistant content must not be empty")
         product_ids = tuple(recommended_product_ids)
+        if len(product_ids) > 5:
+            raise ValueError("at most five recommended product IDs are allowed")
         if any(not isinstance(product_id, str) or not product_id for product_id in product_ids):
             raise ValueError("recommended product IDs must be non-empty strings")
         if len(set(product_ids)) != len(product_ids):
             raise ValueError("recommended product IDs must be unique")
+        sources = tuple(recommended_product_sources)
+        if sources and len(sources) != len(product_ids):
+            raise ValueError("recommended product sources must match product IDs")
+        if not sources:
+            sources = ("organic",) * len(product_ids)
+        if any(source not in {"organic", "sponsored"} for source in sources):
+            raise ValueError("recommended product sources are invalid")
 
         now = _utc_now()
         with self._connection() as connection, connection:
@@ -271,12 +297,23 @@ class ConversationRepository:
             connection.execute(
                 "DELETE FROM turn_recommendations WHERE turn_id = ?", (turn_id,)
             )
+            connection.execute(
+                "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
+            )
             connection.executemany(
                 """INSERT INTO turn_recommendations
                    (turn_id, product_id, position) VALUES (?, ?, ?)""",
                 (
                     (turn_id, product_id, position)
                     for position, product_id in enumerate(product_ids)
+                ),
+            )
+            connection.executemany(
+                """INSERT INTO turn_recommendation_sources
+                   (turn_id, product_id, source) VALUES (?, ?, ?)""",
+                (
+                    (turn_id, product_id, source)
+                    for product_id, source in zip(product_ids, sources)
                 ),
             )
             connection.execute(
@@ -286,7 +323,7 @@ class ConversationRepository:
             row = connection.execute(
                 "SELECT * FROM turns WHERE id = ?", (turn_id,)
             ).fetchone()
-        return self._turn(row, product_ids)
+        return self._turn(row, product_ids, sources)
 
     def fail_turn(
         self,
@@ -325,6 +362,9 @@ class ConversationRepository:
             try:
                 connection.execute(
                     "DELETE FROM turn_recommendations WHERE turn_id = ?", (turn_id,)
+                )
+                connection.execute(
+                    "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
                 )
                 connection.execute(
                     """UPDATE turns SET status = 'pending', assistant_content = NULL,
@@ -382,6 +422,10 @@ class ConversationRepository:
                 "DELETE FROM turn_recommendations WHERE turn_id = ?",
                 ((row["id"],) for row in pending_ids),
             )
+            connection.executemany(
+                "DELETE FROM turn_recommendation_sources WHERE turn_id = ?",
+                ((row["id"],) for row in pending_ids),
+            )
             cursor = connection.execute(
                 """UPDATE turns SET status = 'failed', assistant_content = NULL,
                    error_code = 'service_restarted', updated_at = ?
@@ -432,6 +476,9 @@ class ConversationRepository:
                 connection.execute(
                     "DELETE FROM turn_recommendations WHERE turn_id = ?", (turn_id,)
                 )
+                connection.execute(
+                    "DELETE FROM turn_recommendation_sources WHERE turn_id = ?", (turn_id,)
+                )
             connection.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (now, conversation_id),
@@ -455,7 +502,9 @@ class ConversationRepository:
 
     @staticmethod
     def _turn(
-        row: sqlite3.Row, recommended_product_ids: tuple[str, ...] = ()
+        row: sqlite3.Row,
+        recommended_product_ids: tuple[str, ...] = (),
+        recommended_product_sources: tuple[str, ...] = (),
     ) -> Turn:
         return Turn(
             id=row["id"],
@@ -467,6 +516,7 @@ class ConversationRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             recommended_product_ids=recommended_product_ids,
+            recommended_product_sources=recommended_product_sources,
         )
 
     @staticmethod

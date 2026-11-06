@@ -7,7 +7,12 @@ from openai import APIConnectionError
 from pydantic import ValidationError
 
 from agent_service.config import LLMConfig
-from agent_service.mall_client import MallServiceUnavailable, ProductData
+from agent_service.mall_client import (
+    CandidateProducts,
+    MallServiceUnavailable,
+    ProductData,
+    UserContextData,
+)
 from agent_service.providers import ModelProtocolError, ModelUpstreamError
 from agent_service.recommendation_agent import (
     DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH,
@@ -50,6 +55,17 @@ class RecordingProductTool:
         return result
 
 
+class SourceProductTool(RecordingProductTool):
+    async def get_user_context(self, user_id: int):
+        return UserContextData(user_id, (), ("purchased",), (), {"favorite": "coffee"})
+
+    async def get_product_recommendations(self, user_id: int):
+        return CandidateProducts("organic", tuple(item(str(i)) for i in range(1, 5)))
+
+    async def get_ad_recommendations(self, user_id: int):
+        return CandidateProducts("sponsored", (item("5"), item("purchased")))
+
+
 @pytest.mark.anyio
 async def test_sdk_runner_returns_plain_text_without_searching() -> None:
     model = ScriptedModel([[assistant_message("  你好  ")]])
@@ -68,6 +84,32 @@ async def test_sdk_runner_returns_plain_text_without_searching() -> None:
     assert [registered.name for registered in model.first_call.tools] == [
         "search_products"
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_combines_context_organic_and_sponsored_candidates() -> None:
+    model = ScriptedModel(
+        [
+            [
+                function_call("get_user_context", {}, call_id="context"),
+                function_call("get_product_recommendations", {}, call_id="organic"),
+                function_call("get_ad_recommendations", {}, call_id="ads"),
+            ],
+            [
+                function_call(
+                    "submit_product_recommendation",
+                    {"answer": "综合推荐", "product_ids": ["1", "2", "3", "4", "5"]},
+                    call_id="submit",
+                )
+            ],
+        ]
+    )
+
+    result = await RecommendationAgent(model, SourceProductTool()).generate([])
+
+    assert result.product_ids == ("1", "2", "3", "4", "5")
+    assert result.product_sources == ("organic", "organic", "organic", "organic", "sponsored")
+    assert "get_ad_recommendations" in [tool.name for tool in model.first_call.tools]
 
 
 @pytest.mark.anyio

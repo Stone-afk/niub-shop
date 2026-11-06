@@ -278,6 +278,24 @@ def test_only_latest_failed_turn_can_prepare_retry(tmp_path: Path) -> None:
     assert repo.get_conversation(1, conversation.id).turns[-1].recommended_product_ids == ()
 
 
+def test_persists_recommendation_sources_alongside_product_ids(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    conversation = repo.create_conversation(1)
+    turn = repo.create_turn(1, conversation.id, "推荐")
+
+    repo.complete_turn(
+        1,
+        conversation.id,
+        turn.id,
+        "回答",
+        ["organic-product", "sponsored-product"],
+        ["organic", "sponsored"],
+    )
+
+    stored = repo.get_conversation(1, conversation.id).turns[0]
+    assert stored.recommended_product_ids == ("organic-product", "sponsored-product")
+    assert stored.recommended_product_sources == ("organic", "sponsored")
+
 def test_model_messages_exclude_failed_turns_and_include_active_user(
     tmp_path: Path,
 ) -> None:

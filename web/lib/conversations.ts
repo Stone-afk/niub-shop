@@ -31,7 +31,13 @@ export async function getConversation(id: string): Promise<ConversationDetail> {
       (turn) =>
         !Array.isArray(turn.recommended_product_ids) ||
         turn.recommended_product_ids.some((productId) => typeof productId !== "string" || !productId) ||
-        new Set(turn.recommended_product_ids).size !== turn.recommended_product_ids.length,
+        new Set(turn.recommended_product_ids).size !== turn.recommended_product_ids.length ||
+        (turn.recommended_product_sources !== undefined &&
+          (!Array.isArray(turn.recommended_product_sources) ||
+            turn.recommended_product_sources.length !== turn.recommended_product_ids.length ||
+            turn.recommended_product_sources.some(
+              (source) => source !== "organic" && source !== "sponsored",
+            ))),
     )
   ) {
     throw new Error("Invalid conversation response");
@@ -43,7 +49,7 @@ export async function streamConversationTurn(
   conversationId: string,
   content: string,
   onDelta: (content: string) => void,
-  onRecommendations?: (ids: string[]) => void,
+  onRecommendations?: (ids: string[], sources: string[]) => void,
 ): Promise<void> {
   const response = await fetch(
     `/api/conversations/${encodeURIComponent(conversationId)}/turns`,
@@ -64,7 +70,7 @@ export async function retryConversationTurn(
   conversationId: string,
   turnId: string,
   onDelta: (content: string) => void,
-  onRecommendations?: (ids: string[]) => void,
+  onRecommendations?: (ids: string[], sources: string[]) => void,
 ): Promise<void> {
   const response = await fetch(
     `/api/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,

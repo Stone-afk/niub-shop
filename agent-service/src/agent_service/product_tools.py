@@ -100,6 +100,17 @@ class MallProductSearchTool:
 
         return tuple(item[2] for item in matches[: filters.limit])
 
+    async def get_user_context(self, user_id: int):
+        return await anyio.to_thread.run_sync(self._client.get_user_context, user_id)
+
+    async def get_product_recommendations(self, user_id: int):
+        return await anyio.to_thread.run_sync(self._client.get_recommendations, user_id)
+
+    async def get_ad_recommendations(self, user_id: int):
+        return await anyio.to_thread.run_sync(
+            self._client.get_ad_recommendations, user_id
+        )
+
 
 def _relevance_score(product: ProductData, keyword: str) -> int:
     keyword = _normalize_keyword(keyword)

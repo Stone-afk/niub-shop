@@ -60,6 +60,7 @@ class BufferedRecommendationStream:
         self.turn = turn
         self.chunk_size = chunk_size
         self.recommended_product_ids = result.product_ids
+        self.recommended_product_sources = result.product_sources
         self._finished = False
 
     def __aiter__(self) -> AsyncIterator[str]:
@@ -78,6 +79,7 @@ class BufferedRecommendationStream:
                     self.turn.id,
                     self.result.answer,
                     self.result.product_ids,
+                    self.result.product_sources,
                 )
             )
             completed = True
@@ -218,11 +220,19 @@ class ConversationService:
             not isinstance(result.answer, str)
             or not result.answer
             or len(result.answer) > 20000
-            or len(result.product_ids) > 10
+            or len(result.product_ids) > 5
             or len(set(result.product_ids)) != len(result.product_ids)
             or any(
                 not isinstance(product_id, str) or not product_id
                 for product_id in result.product_ids
+            )
+            or (
+                result.product_sources
+                and len(result.product_sources) != len(result.product_ids)
+            )
+            or any(
+                source not in {"organic", "sponsored"}
+                for source in result.product_sources
             )
         ):
             raise RecommendationInvalid("Recommendation response is invalid")

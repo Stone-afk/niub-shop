@@ -56,6 +56,7 @@ class UnknownTool(RuntimeError):
 class RecommendationResult:
     answer: str
     product_ids: tuple[str, ...]
+    product_sources: tuple[str, ...] = field(default=(), compare=False)
 
 
 class _RecommendationSubmission(BaseModel):
@@ -65,7 +66,7 @@ class _RecommendationSubmission(BaseModel):
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20000)
     ]
     product_ids: Annotated[
-        list[Annotated[str, StringConstraints(min_length=1)]], Field(max_length=10)
+        list[Annotated[str, StringConstraints(min_length=1)]], Field(max_length=5)
     ]
 
 
@@ -75,10 +76,15 @@ class RecommendationRunContext:
 
     product_tool: ProductSearchTool
     max_search_calls: int
+    source_tool: Any | None = None
+    user_id: int = 1
     search_count: int = 0
     searched: bool = False
     found_products: bool = False
     candidate_ids: set[str] = field(default_factory=set)
+    candidate_sources: dict[str, str] = field(default_factory=dict)
+    purchased_ids: set[str] = field(default_factory=set)
+    context_loaded: bool = False
     submission: RecommendationResult | None = None
     search_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -141,12 +147,65 @@ async def _search_products(
         except MallServiceUnavailable as error:
             raise MallServiceUnavailable("Mall service is unavailable") from error
 
+        if state.source_tool is not None and not state.context_loaded:
+            await _get_user_context(run_context)
+        if state.purchased_ids:
+            products = tuple(
+                product for product in products if product.id not in state.purchased_ids
+            )
+
         state.candidate_ids.update(product.id for product in products)
+        for product in products:
+            state.candidate_sources.setdefault(product.id, "organic")
         state.found_products = state.found_products or bool(products)
     return json.dumps(
         {"items": [asdict(product) for product in products]},
         ensure_ascii=False,
     )
+
+
+async def _get_user_context(run_context: RunContextWrapper[RecommendationRunContext]) -> str:
+    source = run_context.context.source_tool
+    if source is None:
+        raise MallServiceUnavailable("Mall service is unavailable")
+    context = await source.get_user_context(run_context.context.user_id)
+    run_context.context.purchased_ids.update(context.purchased_product_ids)
+    run_context.context.context_loaded = True
+    return json.dumps(asdict(context), ensure_ascii=False)
+
+
+async def _get_source_recommendations(
+    run_context: RunContextWrapper[RecommendationRunContext],
+    *,
+    sponsored: bool,
+) -> str:
+    source = run_context.context.source_tool
+    if source is None:
+        raise MallServiceUnavailable("Mall service is unavailable")
+    if not run_context.context.context_loaded:
+        await _get_user_context(run_context)
+    result = (
+        await source.get_ad_recommendations(run_context.context.user_id)
+        if sponsored
+        else await source.get_product_recommendations(run_context.context.user_id)
+    )
+    run_context.context.searched = True
+    items = [item for item in result.items if item.id not in run_context.context.purchased_ids]
+    for item in items:
+        run_context.context.candidate_ids.add(item.id)
+        run_context.context.candidate_sources[item.id] = result.source
+    return json.dumps(
+        {"source": result.source, "items": [asdict(item) for item in items]},
+        ensure_ascii=False,
+    )
+
+
+async def _get_product_recommendations(run_context: Any) -> str:
+    return await _get_source_recommendations(run_context, sponsored=False)
+
+
+async def _get_ad_recommendations(run_context: Any) -> str:
+    return await _get_source_recommendations(run_context, sponsored=True)
 
 
 async def _submit_product_recommendation(
@@ -176,12 +235,24 @@ async def _submit_product_recommendation(
     deduplicated_ids = tuple(dict.fromkeys(submission.product_ids))
     if any(product_id not in state.candidate_ids for product_id in deduplicated_ids):
         raise RecommendationInvalid("Recommendation response is invalid")
+    product_sources = tuple(
+        state.candidate_sources.get(product_id, "organic")
+        for product_id in deduplicated_ids
+    )
+    sponsored_count = product_sources.count("sponsored")
+    if sponsored_count > 2:
+        raise RecommendationInvalid("Recommendation response is invalid")
     state.submission = RecommendationResult(
         answer=submission.answer,
         product_ids=deduplicated_ids,
+        product_sources=product_sources,
     )
     return json.dumps(
-        {"answer": submission.answer, "product_ids": list(deduplicated_ids)},
+        {
+            "answer": submission.answer,
+            "product_ids": list(deduplicated_ids),
+            "product_sources": list(product_sources),
+        },
         ensure_ascii=False,
     )
 
@@ -210,7 +281,7 @@ _SUBMIT_RECOMMENDATION_SCHEMA: dict[str, object] = {
         "product_ids": {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
-            "maxItems": 10,
+            "maxItems": 5,
         },
     },
     "required": ["answer", "product_ids"],
@@ -251,10 +322,20 @@ class RecommendationAgent:
         recommendation_policy_prompt_path: str | Path = (
             DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH
         ),
+        user_id: int = 1,
     ) -> None:
         if max_search_calls < 0:
             raise ValueError("max_search_calls must be non-negative")
         self._product_tool = product_tool
+        self._source_tool = product_tool if all(
+            hasattr(product_tool, name)
+            for name in (
+                "get_user_context",
+                "get_product_recommendations",
+                "get_ad_recommendations",
+            )
+        ) else None
+        self._user_id = user_id
         self._max_search_calls = max_search_calls
         self.model_name = model_name or str(
             getattr(model, "model", type(model).__name__)
@@ -281,6 +362,30 @@ class RecommendationAgent:
             is_enabled=_submit_enabled,
         )
         self._tools = [search_tool, submit_tool]
+        if self._source_tool is not None:
+            self._tools[0:0] = [
+                FunctionTool(
+                    name="get_user_context",
+                    description="Load browsing history, orders, cart, and user profile.",
+                    params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                    on_invoke_tool=lambda context, _arguments: _get_user_context(context),
+                    strict_json_schema=True,
+                ),
+                FunctionTool(
+                    name="get_product_recommendations",
+                    description="Load organic product recommendations from the mall.",
+                    params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                    on_invoke_tool=lambda context, _arguments: _get_product_recommendations(context),
+                    strict_json_schema=True,
+                ),
+                FunctionTool(
+                    name="get_ad_recommendations",
+                    description="Load sponsored product recommendations from the ad system.",
+                    params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                    on_invoke_tool=lambda context, _arguments: _get_ad_recommendations(context),
+                    strict_json_schema=True,
+                ),
+            ]
         self._run_config = RunConfig(
             tracing_disabled=True,
             trace_include_sensitive_data=False,
@@ -304,13 +409,15 @@ class RecommendationAgent:
         context = RecommendationRunContext(
             product_tool=self._product_tool,
             max_search_calls=self._max_search_calls,
+            source_tool=self._source_tool,
+            user_id=self._user_id,
         )
         try:
             result = await Runner.run(
                 agent,
                 cast(Any, list(messages)),
                 context=context,
-                max_turns=self._max_search_calls + 2,
+                max_turns=self._max_search_calls + (5 if self._source_tool is not None else 2),
                 run_config=self._run_config,
             )
         except APIError as error:

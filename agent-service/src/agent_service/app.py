@@ -163,10 +163,14 @@ async def _persisted_model_events(
         yield f"event: error\ndata: {payload}\n\n"
         return
     else:
-        payload = json.dumps(
-            {"product_ids": list(stream.recommended_product_ids)},
-            ensure_ascii=False,
-        )
+        recommendation_payload = {
+            "product_ids": list(stream.recommended_product_ids)
+        }
+        if stream.recommended_product_sources:
+            recommendation_payload["product_sources"] = list(
+                stream.recommended_product_sources
+            )
+        payload = json.dumps(recommendation_payload, ensure_ascii=False)
         yield f"event: recommendations\ndata: {payload}\n\n"
         yield "event: done\ndata: {}\n\n"
     finally:
@@ -339,6 +343,9 @@ def create_app(
                     "updated_at": turn.updated_at,
                     "recommended_product_ids": list(
                         turn.recommended_product_ids
+                    ),
+                    "recommended_product_sources": list(
+                        turn.recommended_product_sources
                     ),
                 }
                 for turn in item.turns

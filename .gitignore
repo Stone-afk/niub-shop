@@ -227,6 +227,7 @@ __marimo__/
 # Project-local npm cache
 web/.npm-cache/
 web/node_modules/
+web/node_modules
 web/.next/
 
 # Local Agent SQLite data

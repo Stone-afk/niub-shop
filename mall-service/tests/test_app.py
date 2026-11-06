@@ -82,3 +82,17 @@ async def test_product_prices_are_non_negative_integer_minor_units(
         "in_stock",
         "out_of_stock",
     }
+
+
+@pytest.mark.anyio
+async def test_mock_user_context_and_recommendation_sources_are_available(
+    client: httpx.AsyncClient,
+) -> None:
+    context = await client.get("/users/1/context")
+    organic = await client.get("/users/1/recommendations")
+    ads = await client.get("/users/1/ads/recommendations")
+
+    assert context.status_code == organic.status_code == ads.status_code == 200
+    assert context.json()["purchased_product_ids"] == ["canvas-tote"]
+    assert organic.json()["source"] == "organic"
+    assert ads.json()["source"] == "sponsored"
