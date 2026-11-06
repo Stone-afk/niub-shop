@@ -36,7 +36,7 @@ from .plan_state import PlanState, validate_plan_state
 
 
 DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH = (
-    Path(__file__).resolve().parents[2] / "prompts" / "recommendation-policy.md"
+    Path(__file__).resolve().parents[2] / "prompts" / "shopping_agent.md"
 )
 
 

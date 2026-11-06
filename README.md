@@ -82,11 +82,11 @@ MALL_SERVICE_URL=http://localhost:8001 \
     --reload --reload-include '*.yaml' --port 8002
 ```
 
-提示词保存在 `agent-service/prompts/*.md`，`llm.local.yaml` 通过 `prompt_file` 和 `recommendation_policy_prompt_file` 指向它们。每次请求都会重新读取 Markdown，因此修改提示词后无需重启服务；`--reload` 仍用于 Python 和 YAML 配置变更。
+提示词保存在 `agent-service/prompts/*.md`，主 Agent 默认使用结构化的 `shopping_agent.md`，独立语义终排提示词为 `recommendation_reranker.md`。`llm.local.yaml` 通过 `prompt_file` 和 `recommendation_policy_prompt_file` 指向提示词文件。每次请求都会重新读取 Markdown，因此修改提示词后无需重启服务；`--reload` 仍用于 Python 和 YAML 配置变更。
 
 模型运行参数也在 `llm.local.yaml` 中控制：`temperature`、`max_tokens`、`timeout_seconds`、`max_turns` 和 `tool_timeout_seconds`。`max_tokens` 小于 32768 时，运行时会按 32768 处理；不填写可选生成参数时使用供应商默认值。`max_turns` 控制一次 Agents SDK 运行的模型/工具回合数，`tool_timeout_seconds` 控制单个工具调用最长执行时间。
 
-Prompt files are reloaded on every request. `--reload` remains available for Python and YAML configuration changes.
+Prompt files (`shopping_agent.md` and `recommendation_reranker.md`) are reloaded on every request. `--reload` remains available for Python and YAML configuration changes.
 
 提示词文件不会在进程内缓存。文件缺失、为空、不是合法 UTF-8 或超过 1 MiB 时，服务会返回安全的提示词配置错误。
 
