@@ -30,6 +30,7 @@ from .product_tools import ProductSearchFilters, ProductSearchTool, SearchSort
 from .providers import ModelMessage, ModelProtocolError, ModelUpstreamError
 from .prompt_loader import load_prompt
 from .profile_provider import AgentProfileProvider
+from .plan_state import PlanState, validate_plan_state
 
 
 DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH = (
@@ -58,6 +59,7 @@ class RecommendationResult:
     answer: str
     product_ids: tuple[str, ...]
     product_sources: tuple[str, ...] = field(default=(), compare=False)
+    plan_state: PlanState | None = field(default=None, compare=False)
 
 
 class _RecommendationSubmission(BaseModel):
@@ -90,6 +92,8 @@ class RecommendationRunContext:
     purchased_ids: set[str] = field(default_factory=set)
     context_loaded: bool = False
     source_status: dict[str, str] = field(default_factory=dict)
+    plan_state: PlanState | None = None
+    plan_history: list[PlanState] = field(default_factory=list)
     submission: RecommendationResult | None = None
     search_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -220,6 +224,15 @@ async def _get_agent_profile(
         "available" if profile.available else "unavailable"
     )
     return json.dumps(asdict(profile), ensure_ascii=False)
+
+
+async def _update_plan(
+    run_context: RunContextWrapper[RecommendationRunContext],
+    plan: PlanState,
+) -> str:
+    run_context.context.plan_state = plan
+    run_context.context.plan_history.append(plan)
+    return plan.model_dump_json(exclude_none=False)
 
 
 async def _get_external_profile(
@@ -380,6 +393,8 @@ _SUBMIT_RECOMMENDATION_SCHEMA: dict[str, object] = {
     "additionalProperties": False,
 }
 
+_PLAN_STATE_SCHEMA: dict[str, object] = PlanState.model_json_schema()
+
 
 async def _execute_with_timeout(
     run_context: RunContextWrapper[RecommendationRunContext],
@@ -404,6 +419,17 @@ async def _invoke_search_tool(run_context: Any, arguments: str) -> str:
         )
     except (json.JSONDecodeError, TypeError) as error:
         raise ToolArgumentsInvalid("Product search arguments are invalid") from error
+
+
+async def _invoke_update_plan_tool(run_context: Any, arguments: str) -> str:
+    try:
+        payload = json.loads(arguments)
+        if not isinstance(payload, dict):
+            raise TypeError
+        plan = validate_plan_state(payload)
+        return await _execute_with_timeout(run_context, _update_plan(run_context, plan))
+    except (json.JSONDecodeError, TypeError, ValidationError) as error:
+        raise RecommendationInvalid("Plan state is invalid") from error
 
 
 async def _invoke_submit_tool(run_context: Any, arguments: str) -> str:
@@ -487,6 +513,13 @@ class RecommendationAgent:
         self._tools = [search_tool, submit_tool]
         if self._source_tool is not None:
             self._tools[0:0] = [
+                FunctionTool(
+                    name="update_plan",
+                    description="Create or update the model-owned execution plan.",
+                    params_json_schema=_PLAN_STATE_SCHEMA,
+                    on_invoke_tool=_invoke_update_plan_tool,
+                    strict_json_schema=True,
+                ),
                 FunctionTool(
                     name="get_agent_profile",
                     description="Load the user profile maintained by the Agent service.",
@@ -596,7 +629,12 @@ class RecommendationAgent:
             raise RecommendationInvalid("Recommendation response is invalid") from error
 
         if context.submission is not None:
-            return context.submission
+            return RecommendationResult(
+                answer=context.submission.answer,
+                product_ids=context.submission.product_ids,
+                product_sources=context.submission.product_sources,
+                plan_state=context.plan_state,
+            )
         if context.searched:
             raise RecommendationInvalid("Recommendation response is invalid")
         answer = result.final_output
@@ -605,7 +643,11 @@ class RecommendationAgent:
         answer = answer.strip()
         if not answer or len(answer) > 20000:
             raise RecommendationInvalid("Recommendation response is invalid")
-        return RecommendationResult(answer=answer, product_ids=())
+        return RecommendationResult(
+            answer=answer,
+            product_ids=(),
+            plan_state=context.plan_state,
+        )
 
 
 def create_recommendation_agent(

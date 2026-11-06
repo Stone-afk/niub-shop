@@ -120,6 +120,73 @@ async def test_agent_combines_context_organic_and_sponsored_candidates() -> None
 
 
 @pytest.mark.anyio
+async def test_model_owned_plan_state_is_updated_and_returned() -> None:
+    plan_draft = {
+        "plan_id": "plan-1",
+        "goal": "推荐杯子",
+        "status": "in_progress",
+        "current_step_id": "profile",
+        "steps": [
+            {
+                "id": "profile",
+                "title": "加载画像",
+                "status": "in_progress",
+                "depends_on": [],
+            },
+            {
+                "id": "recommend",
+                "title": "输出推荐",
+                "status": "pending",
+                "depends_on": ["profile"],
+            },
+        ],
+        "next_action": "get_agent_profile",
+        "reason": "先了解用户偏好",
+    }
+    plan_done = {
+        **plan_draft,
+        "status": "completed",
+        "current_step_id": None,
+        "steps": [
+            plan_draft["steps"][0] | {"status": "completed"},
+            plan_draft["steps"][1] | {"status": "completed"},
+        ],
+        "next_action": "submit_product_recommendation",
+        "reason": "已获得足够信息",
+    }
+    model = ScriptedModel(
+        [
+            [function_call("update_plan", plan_draft, call_id="plan-1")],
+            [
+                function_call(
+                    "get_product_recommendations", {}, call_id="recommendations"
+                )
+            ],
+            [function_call("update_plan", plan_done, call_id="plan-2")],
+            [
+                function_call(
+                    "submit_product_recommendation",
+                    {"answer": "推荐杯子", "product_ids": []},
+                    call_id="submit",
+                )
+            ],
+        ]
+    )
+
+    result = await RecommendationAgent(model, SourceProductTool()).generate([])
+
+    assert result.plan_state is not None
+    assert result.plan_state.status == "completed"
+    assert result.plan_state.plan_id == "plan-1"
+    assert any(
+        entry.get("type") == "function_call_output"
+        and '"status":"completed"' in entry.get("output", "")
+        for entry in model.calls[-1].input
+        if isinstance(entry, dict)
+    )
+
+
+@pytest.mark.anyio
 async def test_recommendation_policy_is_reloaded_for_each_generation(
     tmp_path: Path,
 ) -> None:
