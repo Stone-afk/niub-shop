@@ -258,6 +258,7 @@ export default function ChatPage() {
     setBusy((current) => ({ ...current, [initialKey]: true }));
     setOperationErrors((current) => ({ ...current, [initialKey]: false }));
     let conversationId = selectedId;
+    let streamSucceeded = false;
     try {
       if (!conversationId) {
         const created = await createConversation();
@@ -293,6 +294,8 @@ export default function ChatPage() {
           orderPath = order.preview_path;
         },
       );
+      streamSucceeded = true;
+      setOperationErrors((current) => ({ ...current, [targetId]: false }));
       if (orderPath) router.push(orderPath);
     } catch {
       const errorKey = conversationId ?? NEW_CHAT_KEY;
@@ -302,7 +305,9 @@ export default function ChatPage() {
         try {
           await refreshConversation(conversationId);
         } catch {
-          setOperationErrors((current) => ({ ...current, [conversationId!]: true }));
+          if (!streamSucceeded) {
+            setOperationErrors((current) => ({ ...current, [conversationId!]: true }));
+          }
         }
       }
       const finalKey = conversationId ?? NEW_CHAT_KEY;
@@ -334,6 +339,7 @@ export default function ChatPage() {
       },
     }));
     let orderPath: string | null = null;
+    let streamSucceeded = false;
     try {
       await retryConversationTurn(
         conversationId,
@@ -345,6 +351,8 @@ export default function ChatPage() {
           orderPath = order.preview_path;
         },
       );
+      streamSucceeded = true;
+      setOperationErrors((current) => ({ ...current, [conversationId]: false }));
       if (orderPath) router.push(orderPath);
     } catch {
       setOperationErrors((current) => ({ ...current, [conversationId]: true }));
@@ -352,7 +360,9 @@ export default function ChatPage() {
       try {
         await refreshConversation(conversationId);
       } catch {
-        setOperationErrors((current) => ({ ...current, [conversationId]: true }));
+        if (!streamSucceeded) {
+          setOperationErrors((current) => ({ ...current, [conversationId]: true }));
+        }
       }
       setBusy((current) => ({ ...current, [conversationId]: false }));
       setStreams((current) => {

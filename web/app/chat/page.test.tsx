@@ -188,6 +188,40 @@ describe("persisted conversation page", () => {
     await waitFor(() => expect(api.getConversation).toHaveBeenCalledTimes(2));
   });
 
+  it("clears a stale operation error after a later turn succeeds", async () => {
+    api.streamConversationTurn
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    render(<ChatPage />);
+    await screen.findByText("推荐咖啡杯");
+
+    await user.type(screen.getByLabelText("消息 / Message"), "第一次发送");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+    expect(await screen.findByText("操作失败，请重试 / Operation failed, please retry")).toBeVisible();
+
+    await user.type(screen.getByLabelText("消息 / Message"), "第二次发送");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+    await waitFor(() => expect(screen.queryByText("操作失败，请重试 / Operation failed, please retry")).not.toBeInTheDocument());
+  });
+
+  it("does not show an operation error when the stream succeeds but refresh is temporarily unavailable", async () => {
+    let conversationReads = 0;
+    api.getConversation.mockImplementation((id: string) => {
+      conversationReads += 1;
+      if (conversationReads === 2) return Promise.reject(new Error("refresh unavailable"));
+      return Promise.resolve(details[id as keyof typeof details]);
+    });
+    const user = userEvent.setup();
+    render(<ChatPage />);
+    await screen.findByText("推荐咖啡杯");
+
+    await user.type(screen.getByLabelText("消息 / Message"), "成功回答");
+    await user.click(screen.getByRole("button", { name: "发送 / Send" }));
+    await waitFor(() => expect(api.streamConversationTurn).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("操作失败，请重试 / Operation failed, please retry")).not.toBeInTheDocument());
+  });
+
   it("keeps stream deltas attached to their original conversation after selection changes", async () => {
     let sendDelta!: (value: string) => void;
     let finish!: () => void;
