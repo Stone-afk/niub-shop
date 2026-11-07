@@ -622,6 +622,21 @@ async def test_conversation_detail_maps_missing_and_other_user_to_same_404(
 
 
 @pytest.mark.anyio
+async def test_delete_conversation_is_scoped_and_returns_no_content(tmp_path: Path) -> None:
+    client, repository = make_persistent_client(tmp_path, RecordingProvider())
+    created = repository.create_conversation(1)
+    foreign = repository.create_conversation(2)
+    async with client:
+        deleted = await client.delete(f"/conversations/{created.id}")
+        missing = await client.delete(f"/conversations/{created.id}")
+        hidden = await client.delete(f"/conversations/{foreign.id}")
+
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert missing.status_code == hidden.status_code == 404
+
+
+@pytest.mark.anyio
 async def test_send_turn_streams_and_persists_completed_answer(tmp_path: Path) -> None:
     provider = RecordingProvider(("你", "好"))
     client, repository = make_persistent_client(tmp_path, provider)

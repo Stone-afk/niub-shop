@@ -201,6 +201,14 @@ class ConversationRepository:
             ).fetchall()
         return [self._summary(row) for row in rows]
 
+    def delete_conversation(self, user_id: int, conversation_id: str) -> None:
+        with self._connection() as connection, connection:
+            self._conversation_row(connection, user_id, conversation_id)
+            connection.execute(
+                "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+                (conversation_id, user_id),
+            )
+
     def get_conversation(self, user_id: int, conversation_id: str) -> Conversation:
         with self._connection() as connection:
             row = self._conversation_row(connection, user_id, conversation_id)

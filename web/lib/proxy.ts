@@ -38,6 +38,10 @@ export async function proxyJson(
     return unavailableResponse();
   }
 
+  if (upstream.status === 204 || upstream.status === 205) {
+    return new Response(null, { status: upstream.status });
+  }
+
   if (!upstream.headers.get("content-type")?.includes("application/json")) {
     return unavailableResponse();
   }

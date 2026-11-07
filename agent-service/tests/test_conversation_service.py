@@ -86,6 +86,17 @@ async def test_builds_model_context_from_persisted_completed_turns(
 
 
 @pytest.mark.anyio
+async def test_deletes_conversation_through_service(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    conversation = repository.create_conversation(1)
+    service = ConversationService(repository, FakeRecommendationAgent(), None)
+
+    await service.delete_conversation(1, conversation.id)
+
+    assert await service.list_conversations(1) == []
+
+
+@pytest.mark.anyio
 async def test_persists_latest_plan_state_with_completed_turn(tmp_path: Path) -> None:
     repository = make_repository(tmp_path)
     conversation = repository.create_conversation(1)

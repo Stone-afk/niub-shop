@@ -17,6 +17,9 @@ class Product(BaseModel):
     category: str
     tags: tuple[str, ...]
     availability: Literal["in_stock", "out_of_stock"]
+    capacity_ml: int | None = Field(default=None, ge=1)
+    material: str | None = None
+    has_lid: bool | None = None
 
 
 class ProductList(BaseModel):

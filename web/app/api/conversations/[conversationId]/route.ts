@@ -16,3 +16,15 @@ export async function GET(
   );
 }
 
+export async function DELETE(
+  request: Request,
+  context: RouteContext,
+): Promise<Response> {
+  const { conversationId } = await context.params;
+  const baseUrl = process.env.AGENT_SERVICE_URL ?? "http://localhost:8002";
+  return proxyJson(
+    request,
+    serviceUrl(baseUrl, `/conversations/${encodeURIComponent(conversationId)}`),
+  );
+}
+

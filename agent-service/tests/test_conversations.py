@@ -130,6 +130,36 @@ def test_every_lookup_is_scoped_by_user_id(tmp_path: Path) -> None:
         assert "秘密内容" not in str(error.value)
 
 
+def test_delete_conversation_cascades_all_persisted_children(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    conversation = repo.create_conversation(1)
+    turn = repo.create_turn(1, conversation.id, "推荐并下单")
+    repo.complete_turn(
+        1,
+        conversation.id,
+        turn.id,
+        "已创建订单",
+        recommended_product_ids=("ceramic-mug",),
+        recommended_product_sources=("organic",),
+        orders=[
+            {
+                "order_id": "ord-1",
+                "preview_path": "/orders/ord-1/preview",
+                "status": "pending_payment",
+            }
+        ],
+    )
+
+    repo.delete_conversation(1, conversation.id)
+
+    assert repo.list_conversations(1) == []
+    with pytest.raises(ConversationNotFound):
+        repo.get_conversation(1, conversation.id)
+    with sqlite3.connect(repo.path) as connection:
+        for table in ("turns", "turn_recommendations", "turn_recommendation_sources", "turn_orders"):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
 def test_partial_unique_index_rejects_second_pending_turn(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     conversation = repo.create_conversation(1)

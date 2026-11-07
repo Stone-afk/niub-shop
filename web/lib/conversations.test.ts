@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createConversation,
+  deleteConversation,
   getConversation,
   listConversations,
   retryConversationTurn,
@@ -25,6 +26,17 @@ const summary = {
 };
 
 describe("conversation JSON client", () => {
+  it("deletes a conversation by encoded id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(deleteConversation("c/1")).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/conversations/c%2F1", {
+      method: "DELETE",
+    });
+  });
+
   it("lists, creates, and loads an encoded conversation id", async () => {
     const detail = {
       ...summary,

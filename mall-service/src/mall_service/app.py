@@ -96,18 +96,25 @@ def external_profile(user_id: int) -> ExternalProfile:
 @app.get("/users/{user_id}/recommendations", response_model=RecommendationList)
 def recommendations(user_id: int) -> RecommendationList:
     del user_id
-    products = list_products()
+    products = {product.id: product for product in list_products()}
     return RecommendationList(
         source="organic",
-        items=[products[1], products[0]],
+        items=[
+            products["ceramic-mug"],
+            products["glass-coffee-cup"],
+            products["office-mug-with-lid"],
+        ],
     )
 
 
 @app.get("/users/{user_id}/ads/recommendations", response_model=RecommendationList)
 def ad_recommendations(user_id: int) -> RecommendationList:
     del user_id
-    products = list_products()
-    return RecommendationList(source="sponsored", items=[products[0], products[1]])
+    products = {product.id: product for product in list_products()}
+    return RecommendationList(
+        source="sponsored",
+        items=[products["stainless-travel-tumbler"]],
+    )
 
 
 @app.post("/orders", response_model=Order, status_code=201)

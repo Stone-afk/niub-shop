@@ -76,6 +76,11 @@
   gap: 8px;
 }
 
+.historyRow {
+  display: grid;
+  gap: 4px;
+}
+
 .historyItem,
 .selectedHistory {
   display: grid;
@@ -89,6 +94,20 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.deleteHistory {
+  justify-self: end;
+  border: 0;
+  background: transparent;
+  color: #9a4a2a;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.deleteHistory:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .historyItem:hover {

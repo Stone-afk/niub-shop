@@ -28,6 +28,9 @@ class ProductData:
     category: str
     tags: tuple[str, ...]
     availability: Availability
+    capacity_ml: int | None = None
+    material: str | None = None
+    has_lid: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,9 @@ class _ProductPayload(BaseModel):
     category: str
     tags: list[str]
     availability: Availability
+    capacity_ml: int | None = None
+    material: str | None = None
+    has_lid: bool | None = None
 
 
 class _ProductListPayload(BaseModel):
@@ -171,6 +177,9 @@ class MallClient:
                 category=item.category,
                 tags=tuple(item.tags),
                 availability=item.availability,
+                capacity_ml=item.capacity_ml,
+                material=item.material,
+                has_lid=item.has_lid,
             )
             for item in payload.items
         ]
@@ -284,6 +293,9 @@ class MallClient:
                 category=item.category,
                 tags=tuple(item.tags),
                 availability=item.availability,
+                capacity_ml=item.capacity_ml,
+                material=item.material,
+                has_lid=item.has_lid,
             )
             for item in items
         ]

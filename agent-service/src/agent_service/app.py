@@ -332,6 +332,18 @@ def create_app(
             "last_turn_status": item.last_turn_status,
         }
 
+    @application.delete("/conversations/{conversation_id}", status_code=204)
+    async def delete_conversation(conversation_id: str):
+        try:
+            await service.delete_conversation(
+                resolve_current_user_id(), conversation_id
+            )
+        except ConversationNotFound:
+            return _error_response(
+                404, "conversation_not_found", "Conversation was not found"
+            )
+        return None
+
     @application.get("/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str):
         try:

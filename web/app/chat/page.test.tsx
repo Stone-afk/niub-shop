@@ -7,6 +7,7 @@ import ChatPage from "./page";
 const api = vi.hoisted(() => ({
   listConversations: vi.fn(),
   createConversation: vi.fn(),
+  deleteConversation: vi.fn(),
   getConversation: vi.fn(),
   streamConversationTurn: vi.fn(),
   retryConversationTurn: vi.fn(),
@@ -93,6 +94,7 @@ beforeEach(() => {
   );
   api.streamConversationTurn.mockResolvedValue(undefined);
   api.retryConversationTurn.mockResolvedValue(undefined);
+  api.deleteConversation.mockResolvedValue(undefined);
   productApi.listProducts.mockResolvedValue(products);
 });
 
@@ -126,6 +128,18 @@ describe("persisted conversation page", () => {
 
     await waitFor(() => expect(api.getConversation).toHaveBeenCalledWith("older"));
     expect(screen.getByText("开始一段对话 / Start a conversation")).toBeVisible();
+  });
+
+  it("deletes a history conversation and selects the next available one", async () => {
+    const user = userEvent.setup();
+    render(<ChatPage />);
+    await screen.findByText("推荐咖啡杯");
+
+    await user.click(screen.getAllByRole("button", { name: "删除对话 / Delete conversation" })[0]);
+
+    await waitFor(() => expect(api.deleteConversation).toHaveBeenCalledWith("recent"));
+    expect(screen.queryByRole("button", { name: /最近对话/ })).not.toBeInTheDocument();
+    expect(await screen.findByText("开始一段对话 / Start a conversation")).toBeVisible();
   });
 
   it("keeps new chat unsaved until the first message, then refreshes server state", async () => {

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import {
   createConversation,
+  deleteConversation,
   getConversation,
   listConversations,
   retryConversationTurn,
@@ -177,6 +178,32 @@ export default function ChatPage() {
     ]);
     setDetails((current) => ({ ...current, [conversationId]: detail }));
     setSummaries(items);
+  }
+
+  async function removeConversation(conversationId: string) {
+    if (busy[conversationId]) return;
+    try {
+      await deleteConversation(conversationId);
+      const remaining = summaries.filter((summary) => summary.id !== conversationId);
+      setSummaries(remaining);
+      setDetails((current) => {
+        const { [conversationId]: _removed, ...rest } = current;
+        return rest;
+      });
+      setStreams((current) => {
+        const { [conversationId]: _removed, ...rest } = current;
+        return rest;
+      });
+      setOperationErrors((current) => {
+        const { [conversationId]: _removed, ...rest } = current;
+        return rest;
+      });
+      if (selectedId === conversationId) {
+        setSelectedId(remaining[0]?.id ?? null);
+      }
+    } catch {
+      setOperationErrors((current) => ({ ...current, [conversationId]: true }));
+    }
   }
 
   function appendDelta(conversationId: string, delta: string) {
@@ -376,16 +403,27 @@ export default function ChatPage() {
             )}
             <div className={styles.historyList}>
               {summaries.map((summary) => (
-                <button
-                  type="button"
-                  className={summary.id === selectedId ? styles.selectedHistory : styles.historyItem}
-                  aria-current={summary.id === selectedId ? "true" : undefined}
-                  key={summary.id}
-                  onClick={() => setSelectedId(summary.id)}
-                >
-                  <strong>{summary.title}</strong>
-                  <span>{summary.last_turn_status === "failed" ? "回复失败 / Failed" : "已保存 / Saved"}</span>
-                </button>
+                <div className={styles.historyRow} key={summary.id}>
+                  <button
+                    type="button"
+                    className={summary.id === selectedId ? styles.selectedHistory : styles.historyItem}
+                    aria-current={summary.id === selectedId ? "true" : undefined}
+                    onClick={() => setSelectedId(summary.id)}
+                  >
+                    <strong>{summary.title}</strong>
+                    <span>{summary.last_turn_status === "failed" ? "回复失败 / Failed" : "已保存 / Saved"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.deleteHistory}
+                    aria-label="删除对话 / Delete conversation"
+                    title={summary.title}
+                    disabled={Boolean(busy[summary.id])}
+                    onClick={() => void removeConversation(summary.id)}
+                  >
+                    删除 / Delete
+                  </button>
+                </div>
               ))}
             </div>
           </nav>

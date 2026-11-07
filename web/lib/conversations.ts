@@ -21,6 +21,13 @@ export function createConversation(): Promise<ConversationSummary> {
   });
 }
 
+export async function deleteConversation(id: string): Promise<void> {
+  const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error("Conversation request failed");
+}
+
 export async function getConversation(id: string): Promise<ConversationDetail> {
   const detail = await requestJson<ConversationDetail>(
     `/api/conversations/${encodeURIComponent(id)}`,

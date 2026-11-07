@@ -157,6 +157,11 @@ class ConversationService:
             self.repository.create_conversation, user_id
         )
 
+    async def delete_conversation(self, user_id: int, conversation_id: str) -> None:
+        await anyio.to_thread.run_sync(
+            self.repository.delete_conversation, user_id, conversation_id
+        )
+
     async def get_conversation(
         self, user_id: int, conversation_id: str
     ) -> Conversation:
