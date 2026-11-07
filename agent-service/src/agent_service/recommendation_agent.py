@@ -112,15 +112,18 @@ class SemanticReranker:
             name="niub-semantic-reranker",
             instructions=load_prompt(self.prompt_path),
             model=self.model,
-            output_type=SemanticRerankOutput,
             model_settings=ModelSettings(parallel_tool_calls=False),
         )
         result = await Runner.run(agent, json.dumps(payload, ensure_ascii=False))
         output = result.final_output
-        if not isinstance(output, SemanticRerankOutput):
+        if not isinstance(output, str):
             raise RecommendationInvalid("Semantic rerank response is invalid")
+        try:
+            parsed = SemanticRerankOutput.model_validate(json.loads(output))
+        except (json.JSONDecodeError, ValidationError) as error:
+            raise RecommendationInvalid("Semantic rerank response is invalid") from error
         available = {candidate.product_id: candidate for candidate in candidates}
-        selected = tuple(dict.fromkeys(output.product_ids))
+        selected = tuple(dict.fromkeys(parsed.product_ids))
         if any(product_id not in available for product_id in selected):
             raise RecommendationInvalid("Semantic rerank response is invalid")
         sources = tuple(available[product_id].channel for product_id in selected)
