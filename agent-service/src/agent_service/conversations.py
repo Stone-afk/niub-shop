@@ -512,11 +512,39 @@ class ConversationRepository:
                    ORDER BY created_at, rowid""",
                 (conversation_id, active_turn_id),
             ).fetchall()
+            recommendation_rows = connection.execute(
+                """SELECT r.turn_id, r.product_id, r.position,
+                          COALESCE(s.source, 'organic') AS source
+                   FROM turn_recommendations r
+                   LEFT JOIN turn_recommendation_sources s
+                     ON s.turn_id = r.turn_id AND s.product_id = r.product_id
+                   WHERE r.turn_id IN (
+                       SELECT id FROM turns WHERE conversation_id = ? AND status = 'completed'
+                   )
+                   ORDER BY r.turn_id, r.position""",
+                (conversation_id,),
+            ).fetchall()
+        recommendations: dict[str, list[dict[str, object]]] = {}
+        for recommendation in recommendation_rows:
+            recommendations.setdefault(recommendation["turn_id"], []).append(
+                {
+                    "position": recommendation["position"] + 1,
+                    "product_id": recommendation["product_id"],
+                    "source": recommendation["source"],
+                }
+            )
         messages: list[ModelMessage] = []
         for row in completed:
             messages.append({"role": "user", "content": row["user_content"]})
+            assistant_content = row["assistant_content"]
+            structured = recommendations.get(row["id"])
+            if structured:
+                assistant_content = (
+                    f"{assistant_content}\n\n[structured_recommendations]\n"
+                    f"{json.dumps(structured, ensure_ascii=False)}"
+                )
             messages.append(
-                {"role": "assistant", "content": row["assistant_content"]}
+                {"role": "assistant", "content": assistant_content}
             )
         messages.append({"role": "user", "content": active["user_content"]})
         return messages

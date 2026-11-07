@@ -77,7 +77,10 @@ async def test_builds_model_context_from_persisted_completed_turns(
     assert agent.messages == [[
         {"role": "system", "content": "系统提示"},
         {"role": "user", "content": "第一问"},
-        {"role": "assistant", "content": "第一答"},
+        {
+            "role": "assistant",
+            "content": '第一答\n\n[structured_recommendations]\n[{"position": 1, "product_id": "old", "source": "organic"}]',
+        },
         {"role": "user", "content": "第二问"},
     ]]
     stored = repository.get_conversation(1, conversation.id).turns[-1]

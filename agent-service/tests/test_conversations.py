@@ -382,6 +382,30 @@ def test_model_messages_exclude_failed_turns_and_include_active_user(
     ]
 
 
+def test_model_messages_include_structured_previous_recommendations(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    conversation = repo.create_conversation(1)
+    completed = repo.create_turn(1, conversation.id, "推荐杯子")
+    repo.complete_turn(
+        1,
+        conversation.id,
+        completed.id,
+        "推荐陶瓷杯和玻璃杯",
+        recommended_product_ids=("ceramic-mug", "glass-coffee-cup"),
+        recommended_product_sources=("organic", "organic"),
+    )
+    active = repo.create_turn(1, conversation.id, "买第一个，数量 1")
+
+    messages = repo.model_messages(1, conversation.id, active.id)
+
+    assert messages[-1] == {"role": "user", "content": "买第一个，数量 1"}
+    assert "structured_recommendations" in messages[1]["content"]
+    assert '"product_id": "ceramic-mug"' in messages[1]["content"]
+    assert '"position": 1' in messages[1]["content"]
+
+
 def test_recover_pending_marks_only_fixed_users_pending_turns_failed(
     tmp_path: Path,
 ) -> None:
