@@ -77,19 +77,21 @@ function ProductCards({
         }
         return (
           <li className={styles.productCard} key={id}>
-            <strong>{product.name}</strong>
-            {sources[index] === "sponsored" && (
-              <span className={styles.sponsored}>广告 / Sponsored</span>
-            )}
-            <span className={styles.productPrice}>{formatPrice(product)}</span>
-            <p>{product.description}</p>
-            <span
-              className={product.availability === "in_stock" ? styles.inStock : styles.outOfStock}
-            >
-              {product.availability === "in_stock"
-                ? "有货 / In stock"
-                : "暂时缺货 / Out of stock"}
-            </span>
+            <a className={styles.productCardLink} href={`/products/${encodeURIComponent(id)}`}>
+              <strong>{product.name}</strong>
+              {sources[index] === "sponsored" && (
+                <span className={styles.sponsored}>广告 / Sponsored</span>
+              )}
+              <span className={styles.productPrice}>{formatPrice(product)}</span>
+              <p>{product.description}</p>
+              <span
+                className={product.availability === "in_stock" ? styles.inStock : styles.outOfStock}
+              >
+                {product.availability === "in_stock"
+                  ? "有货 / In stock"
+                  : "暂时缺货 / Out of stock"}
+              </span>
+            </a>
           </li>
         );
       })}

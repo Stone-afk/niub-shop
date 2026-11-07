@@ -82,11 +82,11 @@ MALL_SERVICE_URL=http://localhost:8001 \
     --reload --reload-include '*.yaml' --port 8002
 ```
 
-提示词保存在 `agent-service/prompts/*.md`，主 Agent 默认使用结构化的 `shopping_agent.md`，独立语义终排提示词为 `recommendation_reranker.md`。`llm.local.yaml` 通过 `prompt_file` 和 `recommendation_policy_prompt_file` 指向提示词文件。每次请求都会重新读取 Markdown，因此修改提示词后无需重启服务；`--reload` 仍用于 Python 和 YAML 配置变更。
+提示词保存在 `agent-service/prompts/*.md`。主 Agent 和独立语义终排 Action 在各自模块中固定 Prompt 路径，并在使用时通过通用 `load_prompt` 每次重新读取 Markdown；Prompt 路径不放在 YAML 配置中。修改 Markdown 后下次请求即可生效；`--reload` 仍用于 Python 和 YAML 配置变更。
 
 模型运行参数也在 `llm.local.yaml` 中控制：`temperature`、`max_tokens`、`timeout_seconds`、`max_turns` 和 `tool_timeout_seconds`。`max_tokens` 小于 32768 时，运行时会按 32768 处理；不填写可选生成参数时使用供应商默认值。`max_turns` 控制一次 Agents SDK 运行的模型/工具回合数，`tool_timeout_seconds` 控制单个工具调用最长执行时间。
 
-Prompt files (`shopping_agent.md` and `recommendation_reranker.md`) are reloaded on every request. `--reload` remains available for Python and YAML configuration changes.
+Prompt files (`shopping_agent.md` and `semantic_reranker.md`) are reloaded on every request. Their paths are owned by the Agent/Action modules rather than YAML configuration. `--reload` remains available for Python and YAML configuration changes.
 
 提示词文件不会在进程内缓存。文件缺失、为空、不是合法 UTF-8 或超过 1 MiB 时，服务会返回安全的提示词配置错误。
 
@@ -157,9 +157,9 @@ curl -N -X POST http://localhost:8002/chat \
   -d '{"messages":[{"role":"user","content":"有哪些商品？"}]}'
 ```
 
-无状态 `/chat` 的成功响应是命名 SSE 事件流：多个 `event: delta`，最后是 `event: done`。请求中的 `messages` 是完整多轮历史；服务会在最前面加入 `prompt_file` 指向的系统提示词。
+无状态 `/chat` 的成功响应是命名 SSE 事件流：多个 `event: delta`，最后是 `event: done`。请求中的 `messages` 是完整多轮历史；服务会在最前面加入代码固定路径加载的系统提示词。
 
-A successful stateless `/chat` response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the prompt loaded from `prompt_file`.
+A successful stateless `/chat` response is a named SSE stream: one or more `event: delta` events followed by `event: done`. `messages` contains the complete conversation history, and the service prepends the system prompt loaded from its code-owned path.
 
 `POST /chat` 是无状态兼容接口。`/chat` 页面使用新的 conversation API：浏览器只发送本轮内容，Agent 从 SQLite 读取已完成轮次并构造模型上下文。当前为单用户本地模式，所有请求由服务端固定归属 `user_id = 1`；客户端不能指定或覆盖用户 ID。
 

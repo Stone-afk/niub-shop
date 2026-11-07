@@ -116,7 +116,8 @@ describe("persisted conversation page", () => {
     expect(cards).toHaveTextContent("有货 / In stock");
     expect(cards).toHaveTextContent("暂时缺货 / Out of stock");
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
-    expect(cards.querySelector("a, button")).toBeNull();
+    expect(cards.querySelectorAll("a")).toHaveLength(2);
+    expect(cards.querySelector('a[href="/products/mug"]')).toBeTruthy();
   });
 
   it("selects and loads an older conversation", async () => {

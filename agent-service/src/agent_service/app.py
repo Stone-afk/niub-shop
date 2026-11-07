@@ -17,6 +17,7 @@ from .conversation_service import (
     LOCAL_USER_ID,
     ConversationService,
     PersistedTurnStream,
+    DEFAULT_SYSTEM_PROMPT_PATH,
     resolve_current_user_id,
 )
 from .conversations import (
@@ -214,7 +215,7 @@ def create_app(
         if resolved_config_path:
             resolved_config = load_llm_config(resolved_config_path)
             resolved_provider = provider_factory(resolved_config)
-            resolved_system_prompt_path = resolved_config.prompt_file
+            resolved_system_prompt_path = DEFAULT_SYSTEM_PROMPT_PATH
 
     resolved_recommendation_agent = recommendation_agent
     if resolved_recommendation_agent is None and resolved_config is not None:

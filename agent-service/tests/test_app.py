@@ -334,8 +334,6 @@ llm:
   api_key: local-test-key
   model: example-model
   timeout_seconds: 15
-  prompt_file: system.md
-  recommendation_policy_prompt_file: recommendation-policy.md
 """,
         encoding="utf-8",
     )
@@ -356,14 +354,12 @@ llm:
     assert response.status_code == 200
     assert len(received_configs) == 1
     assert received_configs[0].model == "example-model"
-    assert provider.messages[0][0] == {
-        "role": "system",
-        "content": "YAML 中的系统提示",
-    }
+    assert provider.messages[0][0]["role"] == "system"
+    assert "牛布商城的智能购物助手" in provider.messages[0][0]["content"]
 
 
 @pytest.mark.anyio
-async def test_chat_returns_prompt_error_without_calling_model(
+async def test_chat_uses_repository_prompt_without_prompt_path_config(
     tmp_path: Path,
 ) -> None:
     config_file = tmp_path / "llm.yaml"
@@ -375,13 +371,10 @@ llm:
   api_key: local-test-key
   model: example-model
   timeout_seconds: 15
-  prompt_file: missing.md
-  recommendation_policy_prompt_file: recommendation-policy.md
 """,
         encoding="utf-8",
     )
-    write_prompt_files(tmp_path)
-    provider = RecordingProvider(("must-not-run",))
+    provider = RecordingProvider(("configured",))
 
     async with make_client(config_path=config_file, provider_factory=lambda _: provider) as client:
         response = await client.post(
@@ -389,9 +382,8 @@ llm:
             json={"messages": [{"role": "user", "content": "hello"}]},
         )
 
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "prompt_load_failed"
-    assert provider.messages == []
+    assert response.status_code == 200
+    assert provider.messages[0][0]["role"] == "system"
 
 
 @pytest.mark.anyio
@@ -407,8 +399,6 @@ llm:
   api_key: local-test-key
   model: example-model
   timeout_seconds: 15
-  prompt_file: system.md
-  recommendation_policy_prompt_file: recommendation-policy.md
 """,
         encoding="utf-8",
     )
@@ -464,8 +454,6 @@ llm:
   api_key: local-test-key
   model: example-model
   timeout_seconds: 15
-  prompt_file: system.md
-  recommendation_policy_prompt_file: recommendation-policy.md
 """,
         encoding="utf-8",
     )

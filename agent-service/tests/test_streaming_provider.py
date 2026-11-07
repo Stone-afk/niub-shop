@@ -102,8 +102,6 @@ def config() -> LLMConfig:
         api_key=SECRET,
         model="example-chat",
         timeout_seconds=12.0,
-        prompt_file=Path("system.md"),
-        recommendation_policy_prompt_file=Path("recommendation-policy.md"),
     )
 
 

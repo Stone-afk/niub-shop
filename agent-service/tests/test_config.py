@@ -26,8 +26,6 @@ def valid_yaml(**overrides: object) -> str:
         "api_key": SECRET,
         "model": "example-chat",
         "timeout_seconds": 45,
-        "prompt_file": "system.md",
-        "recommendation_policy_prompt_file": "recommendation-policy.md",
     }
     values.update(overrides)
     lines = ["llm:"]
@@ -47,10 +45,6 @@ def test_loads_complete_config_and_hides_api_key_from_repr(tmp_path: Path) -> No
     assert config.api_key == SECRET
     assert config.model == "example-chat"
     assert config.timeout_seconds == 45.0
-    assert config.prompt_file == tmp_path / "system.md"
-    assert config.recommendation_policy_prompt_file == (
-        tmp_path / "recommendation-policy.md"
-    )
     assert config.temperature is None
     assert config.max_tokens is None
     assert config.max_turns == 10
@@ -130,14 +124,10 @@ def test_malformed_yaml_traceback_does_not_expose_source_secret(
         ("base_url", "''"),
         ("api_key", "''"),
         ("model", "''"),
-        ("prompt_file", "''"),
-        ("recommendation_policy_prompt_file", "''"),
         ("provider", "123"),
         ("base_url", "[]"),
         ("api_key", "false"),
         ("model", "{}"),
-        ("prompt_file", "9"),
-        ("recommendation_policy_prompt_file", "9"),
     ],
 )
 def test_rejects_empty_or_wrong_type_string_fields(

@@ -282,6 +282,20 @@
   color: #27372f;
 }
 
+.productCardLink {
+  display: grid;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.productCardLink:hover strong,
+.productCardLink:focus-visible strong {
+  color: #93451f;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .productCard strong,
 .unavailableProduct strong {
   line-height: 1.4;

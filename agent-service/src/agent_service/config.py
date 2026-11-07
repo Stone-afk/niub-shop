@@ -19,8 +19,6 @@ class LLMConfig:
     api_key: str = field(repr=False)
     model: str
     timeout_seconds: float
-    prompt_file: Path
-    recommendation_policy_prompt_file: Path
     temperature: float | None = None
     max_tokens: int | None = None
     max_turns: int = 10
@@ -33,8 +31,6 @@ _FIELDS = {
     "api_key",
     "model",
     "timeout_seconds",
-    "prompt_file",
-    "recommendation_policy_prompt_file",
     "temperature",
     "max_tokens",
     "max_turns",
@@ -47,8 +43,6 @@ _REQUIRED_FIELDS = {
     "api_key",
     "model",
     "timeout_seconds",
-    "prompt_file",
-    "recommendation_policy_prompt_file",
 }
 
 
@@ -163,19 +157,12 @@ def load_llm_config(path: str | Path) -> LLMConfig:
             "llm.tool_timeout_seconds must be a positive number"
         )
 
-    prompt_file = config_path.parent / _required_string(values, "prompt_file")
-    recommendation_policy_prompt_file = config_path.parent / _required_string(
-        values, "recommendation_policy_prompt_file"
-    )
-
     return LLMConfig(
         provider=provider,
         base_url=base_url,
         api_key=_required_string(values, "api_key"),
         model=_required_string(values, "model"),
         timeout_seconds=float(timeout_value),
-        prompt_file=prompt_file,
-        recommendation_policy_prompt_file=recommendation_policy_prompt_file,
         temperature=(
             None if temperature_value is None else float(temperature_value)
         ),

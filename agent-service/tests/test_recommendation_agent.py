@@ -563,8 +563,6 @@ def test_factory_uses_configured_chat_completions_model_and_disables_tracing() -
         api_key="local-test-key",
         model="deepseek-flash",
         timeout_seconds=15,
-        prompt_file=Path("system.md"),
-        recommendation_policy_prompt_file=Path("recommendation-policy.md"),
     )
     captured: dict[str, object] = {}
 

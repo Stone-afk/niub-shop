@@ -1063,7 +1063,6 @@ def create_recommendation_agent(
         model,
         product_tool,
         model_name=config.model,
-        recommendation_policy_prompt_path=config.recommendation_policy_prompt_file,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         max_turns=config.max_turns,

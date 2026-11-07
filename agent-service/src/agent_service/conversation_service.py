@@ -29,6 +29,7 @@ from .response_language import detect_language, language_instruction
 
 
 LOCAL_USER_ID = 1
+DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "system.md"
 
 
 def resolve_current_user_id() -> int:
