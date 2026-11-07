@@ -86,6 +86,21 @@ class SemanticReranker:
         self.model = model
         self.prompt_path = Path(prompt_path)
 
+    @staticmethod
+    def _fallback_selection(candidates: Sequence[ScoredCandidate]) -> tuple[str, ...]:
+        organic = sorted(
+            (candidate for candidate in candidates if candidate.channel == "organic"),
+            key=lambda candidate: (-candidate.score, candidate.product_id),
+        )[:2]
+        sponsored = sorted(
+            (candidate for candidate in candidates if candidate.channel == "sponsored"),
+            key=lambda candidate: (-candidate.score, candidate.product_id),
+        )
+        selected = organic or sponsored[:1]
+        if organic and sponsored:
+            selected = [*organic, sponsored[0]]
+        return tuple(candidate.product_id for candidate in selected)
+
     async def rerank(
         self,
         user_request: str,
@@ -114,24 +129,24 @@ class SemanticReranker:
             model=self.model,
             model_settings=ModelSettings(parallel_tool_calls=False),
         )
-        result = await Runner.run(agent, json.dumps(payload, ensure_ascii=False))
-        output = result.final_output
-        if not isinstance(output, str):
-            raise RecommendationInvalid("Semantic rerank response is invalid")
         try:
+            result = await Runner.run(agent, json.dumps(payload, ensure_ascii=False))
+            output = result.final_output
+            if not isinstance(output, str):
+                raise ValueError("semantic reranker output is not text")
             parsed = SemanticRerankOutput.model_validate(json.loads(output))
-        except (json.JSONDecodeError, ValidationError) as error:
-            raise RecommendationInvalid("Semantic rerank response is invalid") from error
-        available = {candidate.product_id: candidate for candidate in candidates}
-        selected = tuple(dict.fromkeys(parsed.product_ids))
-        if any(product_id not in available for product_id in selected):
-            raise RecommendationInvalid("Semantic rerank response is invalid")
-        sources = tuple(available[product_id].channel for product_id in selected)
-        if sources.count("organic") > 2 or sources.count("sponsored") > 1:
-            raise RecommendationInvalid("Semantic rerank response is invalid")
-        if sources and sources[0] == "sponsored" and "organic" in sources:
-            raise RecommendationInvalid("Semantic rerank response is invalid")
-        return selected
+            available = {candidate.product_id: candidate for candidate in candidates}
+            selected = tuple(dict.fromkeys(parsed.product_ids))
+            if any(product_id not in available for product_id in selected):
+                raise ValueError("semantic reranker returned an unknown product")
+            sources = tuple(available[product_id].channel for product_id in selected)
+            if sources.count("organic") > 2 or sources.count("sponsored") > 1:
+                raise ValueError("semantic reranker exceeded source limits")
+            if sources and sources[0] == "sponsored" and "organic" in sources:
+                raise ValueError("semantic reranker placed an ad first")
+            return selected
+        except Exception:
+            return self._fallback_selection(candidates)
 
 
 @dataclass(frozen=True)
@@ -585,6 +600,8 @@ async def _submit_product_recommendation(
         raise RecommendationInvalid("Recommendation response is invalid") from error
 
     deduplicated_ids = tuple(dict.fromkeys(submission.product_ids))
+    if state.semantic_selection:
+        deduplicated_ids = state.semantic_selection
     if any(product_id not in state.candidate_ids for product_id in deduplicated_ids):
         raise RecommendationInvalid("Recommendation response is invalid")
     product_sources = tuple(

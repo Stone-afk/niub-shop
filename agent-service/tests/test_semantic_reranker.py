@@ -40,3 +40,18 @@ async def test_semantic_reranker_uses_independent_prompt_and_returns_selection()
     assert selected == ("organic-2", "ad-1")
     assert model.first_call is not None
     assert "semantic" in model.first_call.system_instructions.lower()
+
+
+@pytest.mark.anyio
+async def test_semantic_reranker_falls_back_to_score_order_on_invalid_model_output() -> None:
+    model = ScriptedModel([[assistant_message("not-json")]])
+    reranker = SemanticReranker(model)
+    candidates = [
+        ScoredCandidate(product("organic-1"), "organic", 80, "matched", {}, ()),
+        ScoredCandidate(product("organic-2"), "organic", 70, "matched", {}, ()),
+        ScoredCandidate(product("ad-1"), "sponsored", 69, "matched", {}, ()),
+    ]
+
+    selected = await reranker.rerank("daily coffee mug", candidates)
+
+    assert selected == ("organic-1", "organic-2", "ad-1")
