@@ -46,6 +46,9 @@ from .recommendation_scoring import (
 DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "prompts" / "shopping_agent.md"
 )
+DEFAULT_SEMANTIC_RERANK_PROMPT_PATH = (
+    Path(__file__).resolve().parents[2] / "prompts" / "semantic_reranker.md"
+)
 
 
 class ToolArgumentsInvalid(RuntimeError):
@@ -62,6 +65,70 @@ class RecommendationInvalid(RuntimeError):
 
 class UnknownTool(RuntimeError):
     """Retained for the public error mapping used by the conversation service."""
+
+
+class SemanticRerankOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    product_ids: Annotated[
+        list[Annotated[str, StringConstraints(min_length=1)]], Field(max_length=3)
+    ]
+
+
+class SemanticReranker:
+    """Independent Agents SDK action for semantic candidate ordering."""
+
+    def __init__(
+        self,
+        model: Model,
+        prompt_path: str | Path = DEFAULT_SEMANTIC_RERANK_PROMPT_PATH,
+    ) -> None:
+        self.model = model
+        self.prompt_path = Path(prompt_path)
+
+    async def rerank(
+        self,
+        user_request: str,
+        candidates: Sequence[ScoredCandidate],
+        *,
+        environment: dict[str, Any] | None = None,
+    ) -> tuple[str, ...]:
+        payload = {
+            "user_request": user_request,
+            "environment": environment or {},
+            "candidates": [
+                {
+                    **asdict(candidate.product),
+                    "channel": candidate.channel,
+                    "score": round(candidate.score, 3),
+                    "score_breakdown": candidate.score_breakdown,
+                    "source_evidence": list(candidate.source_evidence),
+                    "hard_constraint_status": candidate.hard_constraint_status,
+                }
+                for candidate in candidates
+            ],
+        }
+        agent = Agent(
+            name="niub-semantic-reranker",
+            instructions=load_prompt(self.prompt_path),
+            model=self.model,
+            output_type=SemanticRerankOutput,
+            model_settings=ModelSettings(parallel_tool_calls=False),
+        )
+        result = await Runner.run(agent, json.dumps(payload, ensure_ascii=False))
+        output = result.final_output
+        if not isinstance(output, SemanticRerankOutput):
+            raise RecommendationInvalid("Semantic rerank response is invalid")
+        available = {candidate.product_id: candidate for candidate in candidates}
+        selected = tuple(dict.fromkeys(output.product_ids))
+        if any(product_id not in available for product_id in selected):
+            raise RecommendationInvalid("Semantic rerank response is invalid")
+        sources = tuple(available[product_id].channel for product_id in selected)
+        if sources.count("organic") > 2 or sources.count("sponsored") > 1:
+            raise RecommendationInvalid("Semantic rerank response is invalid")
+        if sources and sources[0] == "sponsored" and "organic" in sources:
+            raise RecommendationInvalid("Semantic rerank response is invalid")
+        return selected
 
 
 @dataclass(frozen=True)
@@ -126,6 +193,10 @@ class RecommendationRunContext:
     sponsored_products: dict[str, Any] = field(default_factory=dict)
     scored_organic: list[ScoredCandidate] = field(default_factory=list)
     scored_sponsored: list[ScoredCandidate] = field(default_factory=list)
+    user_request: str = ""
+    environment: dict[str, Any] = field(default_factory=dict)
+    semantic_reranker: SemanticReranker | None = None
+    semantic_selection: tuple[str, ...] = ()
 
 
 def _search_enabled(
@@ -368,6 +439,39 @@ def _scored_payload(state: RecommendationRunContext, source: str) -> dict[str, A
     }
 
 
+async def _semantic_rerank_candidates(
+    run_context: RunContextWrapper[RecommendationRunContext],
+    candidate_ids: list[str] | None = None,
+) -> str:
+    state = run_context.context
+    if state.semantic_reranker is None:
+        raise RecommendationInvalid("Semantic reranker is not configured")
+    available = {
+        candidate.product_id: candidate
+        for candidate in (*state.scored_organic, *state.scored_sponsored)
+    }
+    requested = candidate_ids or list(available)
+    candidates = [
+        available[product_id] for product_id in requested if product_id in available
+    ]
+    if not candidates:
+        state.semantic_selection = ()
+        return json.dumps({"product_ids": []}, ensure_ascii=False)
+    environment = {
+        **state.environment,
+        "source_status": state.source_status,
+        "external_profile": (
+            asdict(state.external_profile) if state.external_profile is not None else None
+        ),
+    }
+    state.semantic_selection = await state.semantic_reranker.rerank(
+        state.user_request,
+        candidates,
+        environment=environment,
+    )
+    return json.dumps({"product_ids": list(state.semantic_selection)}, ensure_ascii=False)
+
+
 async def _get_source_recommendations(
     run_context: RunContextWrapper[RecommendationRunContext],
     *,
@@ -490,6 +594,8 @@ async def _submit_product_recommendation(
         raise RecommendationInvalid("Recommendation response is invalid")
     if sponsored_count and organic_count and product_sources[0] == "sponsored":
         raise RecommendationInvalid("Recommendation response is invalid")
+    if state.semantic_selection and deduplicated_ids != state.semantic_selection:
+        raise RecommendationInvalid("Recommendation must use semantic rerank selection")
     state.submission = RecommendationResult(
         answer=submission.answer,
         product_ids=deduplicated_ids,
@@ -535,6 +641,18 @@ _SUBMIT_RECOMMENDATION_SCHEMA: dict[str, object] = {
         },
     },
     "required": ["answer", "product_ids"],
+    "additionalProperties": False,
+}
+
+_SEMANTIC_RERANK_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "candidate_ids": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "maxItems": 13,
+        }
+    },
     "additionalProperties": False,
 }
 
@@ -611,6 +729,22 @@ async def _invoke_submit_tool(run_context: Any, arguments: str) -> str:
         raise RecommendationInvalid("Recommendation response is invalid") from error
 
 
+async def _invoke_semantic_rerank_tool(run_context: Any, arguments: str) -> str:
+    try:
+        payload = json.loads(arguments)
+        if not isinstance(payload, dict):
+            raise TypeError
+        candidate_ids = payload.get("candidate_ids")
+        if candidate_ids is not None and not isinstance(candidate_ids, list):
+            raise TypeError
+        return await _execute_with_timeout(
+            run_context,
+            _semantic_rerank_candidates(run_context, candidate_ids),
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RecommendationInvalid("Semantic rerank arguments are invalid") from error
+
+
 async def _invoke_create_order_tool(run_context: Any, arguments: str) -> str:
     try:
         payload = json.loads(arguments)
@@ -636,6 +770,7 @@ class RecommendationAgent:
         recommendation_policy_prompt_path: str | Path = (
             DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH
         ),
+        semantic_rerank_prompt_path: str | Path = DEFAULT_SEMANTIC_RERANK_PROMPT_PATH,
         user_id: int = 1,
         profile_provider: AgentProfileProvider | None = None,
         temperature: float | None = None,
@@ -672,6 +807,7 @@ class RecommendationAgent:
         self._recommendation_policy_prompt_path = Path(
             recommendation_policy_prompt_path
         )
+        self._semantic_reranker = SemanticReranker(model, semantic_rerank_prompt_path)
         self._conversation_id = ""
         self._turn_id = ""
         self.tracing_disabled = True
@@ -692,6 +828,16 @@ class RecommendationAgent:
             is_enabled=_submit_enabled,
         )
         self._tools = [search_tool, submit_tool]
+        self._tools.insert(
+            1,
+            FunctionTool(
+                name="semantic_rerank_recommendations",
+                description="Use the independent semantic reranker to select and order final candidates.",
+                params_json_schema=_SEMANTIC_RERANK_SCHEMA,
+                on_invoke_tool=_invoke_semantic_rerank_tool,
+                strict_json_schema=True,
+            ),
+        )
         if self._source_tool is not None:
             if hasattr(self._source_tool, "create_order"):
                 self._tools.append(
@@ -791,6 +937,7 @@ class RecommendationAgent:
             user_id=self._user_id,
             conversation_id=self._conversation_id,
             turn_id=self._turn_id,
+            semantic_reranker=self._semantic_reranker,
         )
         try:
             last_user_message = next(
@@ -802,6 +949,7 @@ class RecommendationAgent:
                 "",
             )
             context.demand = parse_demand(last_user_message)
+            context.user_request = last_user_message
             result = await Runner.run(
                 agent,
                 cast(Any, list(messages)),

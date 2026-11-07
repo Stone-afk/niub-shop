@@ -110,6 +110,7 @@ async def test_sdk_runner_returns_plain_text_without_searching() -> None:
     )
     assert [registered.name for registered in model.first_call.tools] == [
         "search_products",
+        "semantic_rerank_recommendations",
         "submit_product_recommendation",
     ]
 
@@ -317,6 +318,7 @@ async def test_sdk_runner_searches_then_submits_grounded_recommendation() -> Non
     assert len(model.calls) == 2
     assert [registered.name for registered in model.calls[1].tools] == [
         "search_products",
+        "semantic_rerank_recommendations",
         "submit_product_recommendation",
     ]
     assert any(
@@ -373,10 +375,12 @@ async def test_empty_search_can_refine_before_submitting() -> None:
     assert result == RecommendationResult("推荐这件商品", ("one",))
     assert [registered.name for registered in model.calls[1].tools] == [
         "search_products",
+        "semantic_rerank_recommendations",
         "submit_product_recommendation",
     ]
     assert [registered.name for registered in model.calls[2].tools] == [
         "search_products",
+        "semantic_rerank_recommendations",
         "submit_product_recommendation",
     ]
 
