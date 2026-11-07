@@ -25,6 +25,7 @@ from .recommendation_agent import (
     UnknownTool,
 )
 from .prompt_loader import load_prompt
+from .response_language import detect_language, language_instruction
 
 
 LOCAL_USER_ID = 1
@@ -201,13 +202,26 @@ class ConversationService:
         )
         try:
             messages: list[ModelMessage] = []
+            previous_language = None
+            for message in reversed(stored_messages[:-1]):
+                if message["role"] == "user":
+                    previous_language = detect_language(message["content"])
+                    break
+            language = detect_language(turn.user_content, previous_language)
             system_prompt = (
                 load_prompt(self.system_prompt_path)
                 if self.system_prompt_path is not None
                 else self.system_prompt
             )
             if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": f"{system_prompt}\n\n{language_instruction(language)}",
+                    }
+                )
+            else:
+                messages.append({"role": "system", "content": language_instruction(language)})
             messages.extend(stored_messages)
             set_turn_context = getattr(self.recommendation_agent, "set_turn_context", None)
             if set_turn_context is not None:
@@ -256,6 +270,12 @@ class ConversationService:
                 for source in result.product_sources
             )
             or result.product_sources.count("sponsored") > 1
+            or result.product_sources.count("organic") > 2
+            or (
+                result.product_sources
+                and result.product_sources[0] == "sponsored"
+                and "organic" in result.product_sources
+            )
         ):
             raise RecommendationInvalid("Recommendation response is invalid")
 

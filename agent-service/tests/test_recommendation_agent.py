@@ -421,7 +421,7 @@ async def test_searches_are_serialized_and_stop_after_products_are_found() -> No
     result = await RecommendationAgent(model, tool).generate([])
 
     assert result == RecommendationResult("推荐这件商品", ("one",))
-    assert len(tool.filters) == 2
+    assert len(tool.filters) == 1
 
 
 @pytest.mark.anyio

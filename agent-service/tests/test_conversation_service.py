@@ -74,15 +74,17 @@ async def test_builds_model_context_from_persisted_completed_turns(
     stream = await service.open_turn(1, conversation.id, "第二问")
     assert [chunk async for chunk in stream] == ["第二答"]
 
-    assert agent.messages == [[
-        {"role": "system", "content": "系统提示"},
+    assert agent.messages[0][0]["role"] == "system"
+    assert agent.messages[0][0]["content"].startswith("系统提示")
+    assert "[response_language=zh]" in agent.messages[0][0]["content"]
+    assert agent.messages[0][1:] == [
         {"role": "user", "content": "第一问"},
         {
             "role": "assistant",
             "content": '第一答\n\n[structured_recommendations]\n[{"position": 1, "product_id": "old", "source": "organic"}]',
         },
         {"role": "user", "content": "第二问"},
-    ]]
+    ]
     stored = repository.get_conversation(1, conversation.id).turns[-1]
     assert stored.status == "completed"
     assert stored.recommended_product_ids == ("new",)
@@ -133,8 +135,8 @@ async def test_system_prompt_path_is_reloaded_for_each_turn(tmp_path: Path) -> N
     second = await service.open_turn(1, conversation.id, "第二问")
     [chunk async for chunk in second]
 
-    assert agent.messages[0][0] == {"role": "system", "content": "系统提示 v1"}
-    assert agent.messages[1][0] == {"role": "system", "content": "系统提示 v2"}
+    assert agent.messages[0][0]["content"].startswith("系统提示 v1")
+    assert agent.messages[1][0]["content"].startswith("系统提示 v2")
 
 
 @pytest.mark.anyio
@@ -230,8 +232,18 @@ async def test_defensively_rejects_invalid_agent_results(
         RecommendationResult("answer", ("one", "two", "three", "four")),
         RecommendationResult(
             "answer",
+            ("one", "two", "three"),
+            ("organic", "organic", "organic"),
+        ),
+        RecommendationResult(
+            "answer",
             ("organic", "ad-one", "ad-two"),
             ("organic", "sponsored", "sponsored"),
+        ),
+        RecommendationResult(
+            "answer",
+            ("ad", "organic"),
+            ("sponsored", "organic"),
         ),
     ],
 )
@@ -289,4 +301,5 @@ async def test_retry_reuses_failed_turn_and_original_user_content(
     assert turns[0].id == failed.id
     assert turns[0].assistant_content == "重试回答"
     assert turns[0].recommended_product_ids == ("one",)
-    assert agent.messages == [[{"role": "user", "content": "原问题"}]]
+    assert agent.messages[0][-1] == {"role": "user", "content": "原问题"}
+    assert "[response_language=zh]" in agent.messages[0][0]["content"]

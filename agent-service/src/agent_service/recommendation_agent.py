@@ -33,6 +33,14 @@ from .providers import ModelMessage, ModelProtocolError, ModelUpstreamError
 from .prompt_loader import load_prompt
 from .profile_provider import AgentProfileProvider
 from .plan_state import PlanState, validate_plan_state
+from .recommendation_scoring import (
+    Demand,
+    ScoredCandidate,
+    SourceSignals,
+    apply_sponsored_cutoff,
+    parse_demand,
+    score_candidates,
+)
 
 
 DEFAULT_RECOMMENDATION_POLICY_PROMPT_PATH = (
@@ -110,6 +118,14 @@ class RecommendationRunContext:
     submission: RecommendationResult | None = None
     orders: dict[str, OrderReference] = field(default_factory=dict)
     search_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    demand: Demand = field(default_factory=Demand)
+    user_context: Any | None = None
+    agent_profile: Any | None = None
+    external_profile: Any | None = None
+    organic_products: dict[str, Any] = field(default_factory=dict)
+    sponsored_products: dict[str, Any] = field(default_factory=dict)
+    scored_organic: list[ScoredCandidate] = field(default_factory=list)
+    scored_sponsored: list[ScoredCandidate] = field(default_factory=list)
 
 
 def _search_enabled(
@@ -139,6 +155,11 @@ async def _search_products(
 
     state = run_context.context
     async with state.search_lock:
+        if state.found_products:
+            return json.dumps(
+                {"items": [], "skipped": "candidates_already_found"},
+                ensure_ascii=False,
+            )
         if state.search_count >= state.max_search_calls:
             raise ToolLoopExceeded("Product search limit exceeded")
         try:
@@ -207,6 +228,7 @@ async def _get_user_context(run_context: RunContextWrapper[RecommendationRunCont
             ensure_ascii=False,
         )
     run_context.context.purchased_ids.update(context.purchased_product_ids)
+    run_context.context.user_context = context
     run_context.context.context_loaded = True
     run_context.context.source_status["user_context"] = (
         "available" if context.available else "unavailable"
@@ -224,6 +246,7 @@ async def _get_agent_profile(
             ensure_ascii=False,
         )
     profile = provider.get_profile(run_context.context.user_id)
+    run_context.context.agent_profile = profile
     run_context.context.source_status["agent_profile"] = (
         "available" if profile.available else "unavailable"
     )
@@ -267,7 +290,82 @@ async def _get_external_profile(
     run_context.context.source_status["external_profile"] = (
         "available" if profile.available else "unavailable"
     )
+    run_context.context.external_profile = profile
     return json.dumps(asdict(profile), ensure_ascii=False)
+
+
+def _source_signals(state: RecommendationRunContext) -> SourceSignals:
+    context = state.user_context
+    browsing: dict[str, dict[str, Any]] = {}
+    cart_ids: frozenset[str] = frozenset()
+    ordered_ids: frozenset[str] = frozenset()
+    if context is not None:
+        browsing = {
+            item["product_id"]: {
+                "count": item.get("count", 1),
+                "viewed_at": item.get("viewed_at"),
+            }
+            for item in context.browsing
+            if item.get("product_id")
+        }
+        cart_ids = frozenset(item["product_id"] for item in context.cart if item.get("product_id"))
+        ordered_ids = frozenset(item["product_id"] for item in context.orders if item.get("product_id"))
+    return SourceSignals(
+        cart_ids=cart_ids,
+        browsing=browsing,
+        ordered_ids=ordered_ids,
+        agent_profile=(state.agent_profile.profile if state.agent_profile else {}),
+        external_profile=(state.external_profile.profile if state.external_profile else {}),
+    )
+
+
+def _refresh_scored_candidates(state: RecommendationRunContext) -> None:
+    signals = _source_signals(state)
+    state.scored_organic = score_candidates(
+        list(state.organic_products.values()),
+        demand=state.demand,
+        signals=signals,
+        channel="organic",
+        top_k=10,
+    )
+    state.scored_sponsored = score_candidates(
+        list(state.sponsored_products.values()),
+        demand=state.demand,
+        signals=signals,
+        channel="sponsored",
+        top_k=3,
+    )
+    sponsored = state.scored_sponsored
+    if state.demand.has_constraints:
+        sponsored = apply_sponsored_cutoff(state.scored_organic, sponsored)
+    state.candidate_ids = {
+        candidate.product_id for candidate in (*state.scored_organic, *sponsored)
+    }
+    state.candidate_sources = {
+        candidate.product_id: candidate.channel
+        for candidate in (*state.scored_organic, *sponsored)
+    }
+    state.scored_sponsored = sponsored
+
+
+def _scored_payload(state: RecommendationRunContext, source: str) -> dict[str, Any]:
+    candidates = state.scored_organic if source == "organic" else state.scored_sponsored
+    cutoff = state.scored_organic[-1].score if state.scored_organic else None
+    return {
+        "source": source,
+        "available": True,
+        "organic_cutoff_score": cutoff,
+        "items": [
+            {
+                **asdict(candidate.product),
+                "score": round(candidate.score, 3),
+                "hard_constraint_status": candidate.hard_constraint_status,
+                "score_breakdown": candidate.score_breakdown,
+                "source_evidence": list(candidate.source_evidence),
+            }
+            for candidate in candidates
+        ],
+    }
 
 
 async def _get_source_recommendations(
@@ -294,17 +392,10 @@ async def _get_source_recommendations(
         )
     run_context.context.searched = True
     items = [item for item in result.items if item.id not in run_context.context.purchased_ids]
-    for item in items:
-        run_context.context.candidate_ids.add(item.id)
-        run_context.context.candidate_sources[item.id] = result.source
-    return json.dumps(
-        {
-            "source": result.source,
-            "available": True,
-            "items": [asdict(item) for item in items],
-        },
-        ensure_ascii=False,
-    )
+    lane = run_context.context.organic_products if not sponsored else run_context.context.sponsored_products
+    lane.update({item.id: item for item in items})
+    _refresh_scored_candidates(run_context.context)
+    return json.dumps(_scored_payload(run_context.context, result.source), ensure_ascii=False)
 
 
 async def _get_product_recommendations(run_context: Any) -> str:
@@ -394,7 +485,10 @@ async def _submit_product_recommendation(
         for product_id in deduplicated_ids
     )
     sponsored_count = product_sources.count("sponsored")
-    if sponsored_count > 1:
+    organic_count = product_sources.count("organic")
+    if sponsored_count > 1 or organic_count > 2:
+        raise RecommendationInvalid("Recommendation response is invalid")
+    if sponsored_count and organic_count and product_sources[0] == "sponsored":
         raise RecommendationInvalid("Recommendation response is invalid")
     state.submission = RecommendationResult(
         answer=submission.answer,
@@ -699,6 +793,15 @@ class RecommendationAgent:
             turn_id=self._turn_id,
         )
         try:
+            last_user_message = next(
+                (
+                    message["content"]
+                    for message in reversed(messages)
+                    if message["role"] == "user"
+                ),
+                "",
+            )
+            context.demand = parse_demand(last_user_message)
             result = await Runner.run(
                 agent,
                 cast(Any, list(messages)),

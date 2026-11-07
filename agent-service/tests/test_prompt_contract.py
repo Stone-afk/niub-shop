@@ -41,3 +41,10 @@ def test_reranker_prompt_declares_candidate_only_output_contract() -> None:
     assert "## 数量与顺序 / Count and order" in prompt
     assert '"product_id"' in prompt
     assert "只能选择输入候选中的商品" in prompt
+
+
+def test_agent_prompts_define_single_language_response_contract() -> None:
+    for name in ("system.md", "shopping_agent.md"):
+        prompt = (PROMPTS / name).read_text(encoding="utf-8")
+        assert "response_language" in prompt
+        assert "只使用" in prompt or "only" in prompt.lower()
